@@ -1,47 +1,67 @@
-use std::{cell::RefCell, rc::Rc};
+use std::time::Duration;
 
 use bevy::prelude::*;
-use flep::{Duration, DurationUnit, Executor};
+use flep::Executor;
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
         .insert_non_send_resource(Executor::new())
-        .add_systems(Startup, setup_fibers)
-        .add_systems(Update, (run_tamer, spawn_some_stuff).chain())
+        .insert_resource(ExampleTimer {
+            timer: Timer::new(Duration::from_secs(1), TimerMode::Repeating),
+        })
+        .add_systems(Startup, (setup_coroutines, spawn_example))
+        .add_systems(Update, (mutate_example_every_second, run_coroutines).chain())
         .run();
 }
 
-fn setup_fibers(mut executor: NonSendMut<Executor>) {
-    executor.push(move |mut fib| async move {
-        let a = RefCell::new(0);
-        let mut b = 10;
-        for i in 1..=10 {
-            fib.next_tick().await;
-            fib.with_component(|t: Transform| todo!()).await;
-            //println!("Frame {} with a = {}", i, a);
-            async {
-                fib.seconds(1.0).await;
-                a.replace_with(|&mut o| o+1);
-                println!("From inside a is {}", a.borrow());
-                b+=1;
-            }
-            .await;
-            *a.borrow_mut() += 1;
+fn setup_coroutines(commands: Commands, mut executor: NonSendMut<Executor>) {
+    executor.add(commands, move |mut fib| async move {
+        let mut a = 0;
+        loop {
+            println!("It runs since {} seconds", a);
+            fib.duration(Duration::from_secs(1)).await;
+            a +=1;
         }
     });
 }
 
-fn spawn_some_stuff(mut commands: Commands) {
-    commands.spawn_empty();
+#[derive(Component)]
+struct Example(i32);
+
+#[derive(Resource)]
+struct ExampleTimer {
+    timer: Timer,
 }
 
-fn run_fiber(mut executor: NonSendMut<Executor>, time: Res<Time>) {
-    executor.run(&time);
+fn spawn_example(mut commands: Commands, mut executor: NonSendMut<Executor>) {
+    let id = commands.spawn(Example(0)).id();
+    executor.add(commands, move |mut fib| async move {
+        let mut times = 0;
+        loop {
+            fib.change::<Example>(id).await;
+            times += 1;
+            println!("Example from {:?} has changed {} times", id, times);
+        }
+    });
 }
 
-fn run_tamer(world: &mut World) {
-    let cell = Rc::new(world.cell());
-    let mut executor = cell.non_send_resource_mut::<Executor>();
-    executor.run_with_world(Rc::clone(&cell));
+fn mutate_example_every_second(
+    mut q: Query<&mut Example>,
+    mut timer: ResMut<ExampleTimer>,
+    time: Res<Time>,
+) {
+    timer.timer.tick(time.delta());
+    if timer.timer.just_finished() {
+        for mut e in q.iter_mut() {
+            println!("Changed example");
+            e.0 += 1;
+        }
+    }
+}
+
+fn run_coroutines(world: &mut World) {
+    world.non_send_resource_scope(|w, mut exec: Mut<Executor>| {
+        exec.run(w);
+    })
 }
