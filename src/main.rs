@@ -8,7 +8,8 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .insert_non_send_resource(Executor::new())
         .insert_resource(ExampleTimer {
-            timer: Timer::new(Duration::from_secs(1), TimerMode::Repeating),
+            change_timer: Timer::new(Duration::from_secs(1), TimerMode::Repeating),
+            despawn_timer: Timer::new(Duration::from_secs(5), TimerMode::Once),
         })
         .add_systems(Startup, (setup_coroutines, spawn_example))
         .add_systems(Update, (mutate_example_every_second, run_coroutines).chain())
@@ -31,7 +32,8 @@ struct Example(i32);
 
 #[derive(Resource)]
 struct ExampleTimer {
-    timer: Timer,
+    change_timer: Timer,
+    despawn_timer: Timer,
 }
 
 fn spawn_example(mut commands: Commands, mut executor: NonSendMut<Executor>) {
@@ -47,15 +49,21 @@ fn spawn_example(mut commands: Commands, mut executor: NonSendMut<Executor>) {
 }
 
 fn mutate_example_every_second(
-    mut q: Query<&mut Example>,
+    mut q: Query<(Entity ,&mut Example)>,
     mut timer: ResMut<ExampleTimer>,
+    mut commands: Commands,
     time: Res<Time>,
 ) {
-    timer.timer.tick(time.delta());
-    if timer.timer.just_finished() {
-        for mut e in q.iter_mut() {
+    timer.change_timer.tick(time.delta());
+    timer.despawn_timer.tick(time.delta());
+    if timer.despawn_timer.just_finished() {
+        for (e, _) in &q {
+            commands.entity(e).despawn();
+        }
+    } else if timer.change_timer.just_finished() {
+        for (_, mut example) in q.iter_mut() {
             println!("Changed example");
-            e.0 += 1;
+            example.0 += 1;
         }
     }
 }

@@ -1,7 +1,7 @@
 use bevy::ecs::component::Tick;
 use bevy::{ecs::system::SystemState, prelude::*};
 use core::task::Context;
-use coroutine::{BoundTo, CoroState, Fib, WaitingState, WaitingReason};
+use coroutine::{BoundTo, CoroState, Fib, WaitingReason, WaitingState};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::future::Future;
@@ -92,6 +92,7 @@ impl Executor {
                             ready.push(entity);
                         }
                     }
+                    // Todo find something better than polling maybe ?
                     WaitingState::WaitOnChange { from, component_id } => {
                         // For safety reasons, since we may have a &mut to WaitingState
                         assert!(
@@ -122,9 +123,10 @@ impl Executor {
                     WaitingState::Ready => ready.push(entity),
                 };
             }
-
-            self.last_tick = Some(curr_tick);
         }
+
+        sys_state.apply(world);
+        self.last_tick = Some(curr_tick);
 
         for coroutine_id in ready {
             match self
@@ -147,5 +149,9 @@ impl Executor {
                 }
             }
         }
+
+        // TODO: Think of something more efficient
+        self.coroutines
+            .retain(|id, _| world.get_entity(*id).is_some());
     }
 }
