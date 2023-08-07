@@ -7,6 +7,7 @@ edition = "2021"
 
 [dependencies]
 bevy = { git = "https://github.com/zaclegarssure/bevy", branch = "nonsend_scope", features = ["dynamic_linking"] }
+pin-project = "1"
 
 [profile.dev]
 opt-level = 1

@@ -1,7 +1,6 @@
-use bevy::ecs::component::Tick;
-use bevy::{ecs::system::SystemState, prelude::*};
+use bevy::{ecs::component::ComponentId, prelude::*};
 use core::task::Context;
-use coroutine::{OwnedBy, CoroState, Fib, WaitingReason, WaitingState};
+use coroutine::{CoroState, Fib, WaitingReason};
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
@@ -15,20 +14,41 @@ mod waker;
 
 type CoroObject = Pin<Box<dyn Future<Output = ()>>>;
 
+type CoroId = Entity;
+
 pub struct Executor {
     coroutines: HashMap<Entity, CoroObject>,
     receiver: Rc<Cell<Option<WaitingReason>>>,
-    last_tick: Option<Tick>,
     added: VecDeque<(CoroObject, Option<Entity>)>,
+    ready: VecDeque<CoroId>,
+    waiting_on_tick: VecDeque<CoroId>,
+    waiting_on_duration: VecDeque<(Timer, CoroId)>,
+    waiting_on_change: HashMap<(Entity, ComponentId), Vec<CoroId>>,
+    waiting_on_par_or: HashMap<CoroId, Vec<CoroId>>,
+    waiting_on_par_and: HashMap<CoroId, Vec<CoroId>>,
+    is_awaited_by: HashMap<CoroId, CoroId>,
+    own: HashMap<Entity, Vec<CoroId>>,
 }
+
+const ERR_WRONGAWAIT: &'static str = "A coroutine yielded without notifying the executor
+the reason. That is most likely because it awaits a
+future which is not part of this library.";
 
 impl Executor {
     pub fn new() -> Self {
         Executor {
             coroutines: HashMap::new(),
             receiver: Rc::new(Cell::new(None)),
-            last_tick: None,
             added: VecDeque::new(),
+            ready: VecDeque::new(),
+            waiting_on_tick: VecDeque::new(),
+            waiting_on_duration: VecDeque::new(),
+            waiting_on_change: HashMap::new(),
+            waiting_on_par_or: HashMap::new(),
+            waiting_on_par_and: HashMap::new(),
+            is_awaited_by: HashMap::new(),
+            own: HashMap::new(),
+            //waiting_
         }
     }
 
@@ -40,6 +60,7 @@ impl Executor {
         let fib = Fib {
             state: CoroState::Running,
             sender: Rc::clone(&self.receiver),
+            owner: None,
         };
         self.added.push_back((Box::pin(closure(fib)), None));
     }
@@ -52,22 +73,56 @@ impl Executor {
         let fib = Fib {
             state: CoroState::Running,
             sender: Rc::clone(&self.receiver),
+            owner: Some(entity),
         };
 
         self.added
             .push_back((Box::pin(closure(fib, entity)), Some(entity)));
     }
 
+    pub fn remove(&mut self, world: &mut World, coroutine: CoroId) {
+        if !self.coroutines.contains_key(&coroutine) {
+            return;
+        }
+
+        self.coroutines.remove(&coroutine);
+
+        if let Some(others) = self.waiting_on_par_or.remove(&coroutine) {
+            for o in others {
+                self.remove(world, o);
+            }
+        }
+        if let Some(others) = self.waiting_on_par_and.remove(&coroutine) {
+            for o in others {
+                self.remove(world, o);
+            }
+        }
+
+        if let Some(parent) = self.is_awaited_by.remove(&coroutine) {
+            // In case of a ParOr that might be not what's always needed
+            // But in any case this API will be reworked if I can figure out
+            // how to "inline" ParOr and ParAnd
+            self.remove(world, parent);
+        }
+
+        world.despawn(coroutine);
+    }
+
     pub fn run(&mut self, world: &mut World) {
+        // Add new coroutines
         while let Some((coroutine, owner)) = self.added.pop_front() {
-            match owner {
-                Some(owner) => {
-                    let id = world.spawn((WaitingState::Ready, OwnedBy(owner))).id();
-                    self.coroutines.insert(id, coroutine);
-                }
-                None => {
-                    let id = world.spawn(WaitingState::Ready).id();
-                    self.coroutines.insert(id, coroutine);
+            // We just use entity as a convenient unique ID
+            // Maybe in the future we will store everything in the ECS, but without
+            // relation that does not seem like a good fit
+            let id = world.spawn_empty().id();
+            self.coroutines.insert(id, coroutine);
+            self.ready.push_back(id);
+            if let Some(owner) = owner {
+                match self.own.get_mut(&owner) {
+                    Some(owned) => owned.push(id),
+                    None => {
+                        self.own.insert(owner, vec![id]);
+                    }
                 }
             }
         }
@@ -75,94 +130,255 @@ impl Executor {
         let waker = create();
         let mut context = Context::from_waker(&waker);
 
-        let curr_tick = world.change_tick();
-        let last_tick = self.last_tick.unwrap_or(curr_tick);
+        self.ready.append(&mut self.waiting_on_tick);
 
-        let mut sys_state: SystemState<(Query<(Entity, &mut WaitingState)>, Res<Time>, Commands)> =
-            SystemState::new(world);
-        // Not needed since we always recreate the query (which is not that great but we will cache it later on)
-        //sys_state.update_archetypes(world);
-
-        let mut ready = vec![];
-
-        // Safety: we will only mutate WaitingState, and read from other components in the WaitOnChange case,
-        // which cannot collide, simply by checking it at runtime.
-        unsafe {
-            let world_cell = world.as_unsafe_world_cell();
-            let (mut q, time, mut commands) = sys_state.get_unchecked_manual(world_cell);
-            for (entity, mut state) in q.iter_mut() {
-                match *state {
-                    WaitingState::WaitOnTick => {
-                        *state = WaitingState::Ready;
-                        ready.push(entity);
-                    }
-                    WaitingState::WaitOnDuration(ref mut t) => {
-                        t.tick(time.delta());
-                        if t.just_finished() {
-                            *state = WaitingState::Ready;
-                            ready.push(entity);
-                        }
-                    }
-                    // Todo find something better than polling maybe ?
-                    WaitingState::WaitOnChange { from, component_id } => {
-                        // For safety reasons, since we may have a &mut to WaitingState
-                        assert!(
-                            component_id
-                                != world_cell
-                                    .components()
-                                    .component_id::<WaitingState>()
-                                    .unwrap()
-                        );
-                        match world_cell.get_entity(from) {
-                            Some(e) => match e.get_change_ticks_by_id(component_id) {
-                                Some(t) => {
-                                    if t.last_changed_tick().is_newer_than(last_tick, curr_tick) {
-                                        *state = WaitingState::Ready;
-                                        ready.push(entity);
-                                    }
-                                }
-                                // Damn I wish we had relations
-                                None => {
-                                    commands.entity(entity).despawn();
-                                }
-                            },
-                            None => {
-                                commands.entity(entity).despawn();
-                            }
-                        };
-                    }
-                    WaitingState::Ready => ready.push(entity),
-                };
+        world.resource_scope(|w, time: Mut<Time>| {
+            for (t, _) in self.waiting_on_duration.iter_mut() {
+                t.tick(time.delta());
             }
-        }
+            self.waiting_on_duration.retain(|(t, coro)| {
+                if t.just_finished() {
+                    self.ready.push_back(*coro);
+                }
+                !t.just_finished()
+            });
 
-        sys_state.apply(world);
-        self.last_tick = Some(curr_tick);
+            let mut to_despawn = vec![];
 
-        for coroutine_id in ready {
+            self.waiting_on_change.retain(|(e, c), coro| {
+                if let Some(e) = w.get_entity(*e) {
+                    if let Some(t) = e.get_change_ticks_by_id(*c) {
+                        // TODO: Make sure this is correct, I'm really not that confident, even though it works with a simple example
+                        if t.is_changed(w.last_change_tick(), w.change_tick()) {
+                            for c in coro {
+                                self.ready.push_back(*c);
+                            }
+                            return false;
+                        }
+                        return true;
+                    }
+                }
+                to_despawn.append(coro);
+                return false;
+            });
+
+            for c in to_despawn {
+                self.remove(w, c);
+            }
+        });
+
+        while let Some(coro) = self.ready.pop_front() {
+            if !self.coroutines.contains_key(&coro) {
+                continue;
+            }
+
             match self
                 .coroutines
-                .get_mut(&coroutine_id)
+                .get_mut(&coro)
                 .unwrap()
                 .as_mut()
                 .poll(&mut context)
             {
                 Poll::Pending => {
-                    let msg = self
-                        .receiver
-                        .replace(None)
-                        .expect("A coroutine yielded without any reasons");
-                    let state = WaitingState::from_reason(msg, world);
-                    world.entity_mut(coroutine_id).insert(state);
+                    let msg = self.receiver.replace(None).expect(ERR_WRONGAWAIT);
+                    match msg {
+                        WaitingReason::WaitOnTick => self.waiting_on_tick.push_back(coro),
+                        WaitingReason::WaitOnDuration(d) => {
+                            self.waiting_on_duration.push_back((d, coro))
+                        }
+                        WaitingReason::WaitOnChange { from, type_id } => {
+                            let component_id = world.components().get_id(type_id).unwrap();
+                            self.waiting_on_change
+                                .entry((from, component_id))
+                                .or_insert_with(Vec::new)
+                                .push(coro);
+                        }
+                        WaitingReason::WaitOnParOr { coroutines } => {
+                            let parent = coro;
+                            let mut all_ids = Vec::with_capacity(coroutines.len());
+                            for coroutine in coroutines {
+                                let id = world.spawn_empty().id();
+                                self.coroutines.insert(id, coroutine);
+                                self.ready.push_back(id);
+                                self.is_awaited_by.insert(id, parent);
+                                all_ids.push(id);
+                            }
+                            let prev = self.waiting_on_par_or.insert(parent, all_ids);
+                            assert!(prev.is_none());
+                        }
+                    };
                 }
                 Poll::Ready(_) => {
-                    world.despawn(coroutine_id);
+                    // Todo check if another coroutine waits on the result
+                    match self.is_awaited_by.remove(&coro) {
+                        Some(parent) => {
+                            if let Some(others) = self.waiting_on_par_or.remove(&parent) {
+                                // coro is the "winner", all the others are cancelled
+                                for o in others {
+                                    world.despawn(o);
+                                    self.coroutines.remove(&o);
+                                }
+                                self.ready.push_back(parent);
+                            }
+                            if let Some(__others) = self.waiting_on_par_and.get_mut(&parent) {
+                                todo!();
+                            }
+                        }
+                        None => {
+                            self.remove(world, coro);
+                        }
+                    }
                 }
             }
         }
+    }
+}
 
-        // TODO: Think of something more efficient
-        self.coroutines
-            .retain(|id, _| world.get_entity(*id).is_some());
+#[cfg(test)]
+mod tests {
+    use std::{cell::RefCell, rc::Rc, time::Instant};
+
+    use bevy::{
+        prelude::{Component, Mut, World},
+        time::Time,
+    };
+
+    use crate::{coroutine::Fib, Executor};
+
+    #[derive(Component)]
+    struct ExampleComponent(u32);
+
+    #[test]
+    fn wait_on_tick() {
+        let mut world = World::new();
+        world.insert_non_send_resource(Executor::new());
+        world.insert_resource(Time::new(Instant::now()));
+        world.non_send_resource_scope(|w, mut executor: Mut<Executor>| {
+            let a = Rc::new(RefCell::new(0));
+            let b = Rc::clone(&a);
+            executor.add(move |mut fib| async move {
+                *b.borrow_mut() += 1;
+                fib.next_tick().await;
+                *b.borrow_mut() += 1;
+                fib.next_tick().await;
+                *b.borrow_mut() += 1;
+            });
+            executor.run(w);
+            assert_eq!(*a.borrow(), 1);
+            executor.run(w);
+            assert_eq!(*a.borrow(), 2);
+            executor.run(w);
+            assert_eq!(*a.borrow(), 3);
+            executor.run(w);
+            assert_eq!(*a.borrow(), 3);
+        });
+    }
+
+    #[test]
+    fn wait_on_sub_coroutine() {
+        async fn sub_coro(mut fib: Fib) {
+            fib.next_tick().await;
+            fib.next_tick().await;
+        }
+
+        let mut world = World::new();
+        world.insert_non_send_resource(Executor::new());
+        world.insert_resource(Time::new(Instant::now()));
+        world.non_send_resource_scope(|w, mut executor: Mut<Executor>| {
+            let a = Rc::new(RefCell::new(0));
+            let b = Rc::clone(&a);
+            executor.add(move |mut fib| async move {
+                *b.borrow_mut() += 1;
+                fib.on(sub_coro).await;
+                *b.borrow_mut() += 1;
+            });
+            executor.run(w);
+            assert_eq!(*a.borrow(), 1);
+            executor.run(w);
+            assert_eq!(*a.borrow(), 1);
+            executor.run(w);
+            assert_eq!(*a.borrow(), 2);
+            executor.run(w);
+            assert_eq!(*a.borrow(), 2);
+        });
+    }
+
+    #[test]
+    fn wait_on_change() {
+        let mut world = World::new();
+        world.insert_non_send_resource(Executor::new());
+        world.insert_resource(Time::new(Instant::now()));
+        world.non_send_resource_scope(|w, mut executor: Mut<Executor>| {
+            let e = w.spawn(ExampleComponent(0)).id();
+            let a = Rc::new(RefCell::new(0));
+            let b = Rc::clone(&a);
+            executor.add(move |mut fib| async move {
+                fib.next_tick().await;
+                fib.change::<ExampleComponent>(e).await;
+                *b.borrow_mut() += 1;
+            });
+            executor.run(w);
+            assert_eq!(*a.borrow(), 0);
+            w.clear_trackers();
+            executor.run(w);
+            assert_eq!(*a.borrow(), 0);
+            executor.run(w);
+            assert_eq!(*a.borrow(), 0);
+            w.entity_mut(e).get_mut::<ExampleComponent>().unwrap().0 += 1;
+            executor.run(w);
+            assert_eq!(*a.borrow(), 1);
+            executor.run(w);
+            assert_eq!(*a.borrow(), 1);
+        });
+    }
+
+    #[test]
+    #[should_panic]
+    fn await_external_future_panic() {
+        async fn external_future() {
+            std::future::pending::<()>().await;
+        }
+        let mut world = World::new();
+        world.insert_non_send_resource(Executor::new());
+        world.insert_resource(Time::new(Instant::now()));
+        world.non_send_resource_scope(|w, mut executor: Mut<Executor>| {
+            executor.add(move |_| async move {
+                external_future().await;
+            });
+            executor.run(w);
+        });
+    }
+
+    #[test]
+    fn waiting_on_par_or() {
+        let mut world = World::new();
+        world.insert_non_send_resource(Executor::new());
+        world.insert_resource(Time::new(Instant::now()));
+        world.non_send_resource_scope(|w, mut executor: Mut<Executor>| {
+            let a = Rc::new(RefCell::new(0));
+            let b = Rc::clone(&a);
+            executor.add(move |mut fib| async move {
+                fib.par_or(|mut fib| async move {
+                    loop {
+                        fib.next_tick().await;
+                        *b.borrow_mut() += 1;
+                    }
+                })
+                .with(|mut fib| async move {
+                    for _ in 0..4 {
+                        fib.next_tick().await;
+                    }
+                })
+                .await;
+            });
+
+            for i in 0..5 {
+                // Note that it works because the coroutine on the the top of the par_or,
+                // has priority over the one on the bottom, meaning its side effect will be 
+                // seen on the last iteration.
+                executor.run(w);
+                assert_eq!(*a.borrow_mut(), i);
+            }
+        });
     }
 }
