@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use bevy::prelude::*;
-use flep::Executor;
+use flep::{Executor, coroutine::Fib};
 
 fn main() {
     App::new()
@@ -16,8 +16,8 @@ fn main() {
         .run();
 }
 
-fn setup_coroutines(commands: Commands, mut executor: NonSendMut<Executor>) {
-    executor.add(commands, move |mut fib| async move {
+fn setup_coroutines(mut executor: NonSendMut<Executor>) {
+    executor.add(move |mut fib| async move {
         let mut a = 0;
         loop {
             println!("It runs since {} seconds", a);
@@ -26,6 +26,7 @@ fn setup_coroutines(commands: Commands, mut executor: NonSendMut<Executor>) {
         }
     });
 }
+
 
 #[derive(Component)]
 struct Example(i32);
@@ -38,7 +39,7 @@ struct ExampleTimer {
 
 fn spawn_example(mut commands: Commands, mut executor: NonSendMut<Executor>) {
     let id = commands.spawn(Example(0)).id();
-    executor.add(commands, move |mut fib| async move {
+    executor.add(move |mut fib| async move {
         let mut times = 0;
         loop {
             fib.change::<Example>(id).await;
@@ -46,6 +47,16 @@ fn spawn_example(mut commands: Commands, mut executor: NonSendMut<Executor>) {
             println!("Example from {:?} has changed {} times", id, times);
         }
     });
+    executor.add_to_entity(id, bound_to_the_entity);
+}
+
+async fn bound_to_the_entity(mut fib: Fib, entity: Entity) {
+    let mut times = 0;
+    loop {
+        fib.change::<Example>(entity).await;
+        times += 1;
+        println!("Example from {:?} has changed {} times", entity, times);
+    }
 }
 
 fn mutate_example_every_second(

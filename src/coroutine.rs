@@ -53,11 +53,10 @@ impl WaitingState {
 
 // TODO: Should be a relation
 #[derive(Component)]
-pub struct BoundTo(pub Entity);
+pub struct OwnedBy(pub Entity);
 
 pub struct Fib {
     pub(crate) state: CoroState,
-    pub(crate) id: Entity,
     // Maybe replace by a real sender receiver channel at some point
     pub(crate) sender: Rc<Cell<Option<WaitingReason>>>,
 }

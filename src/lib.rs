@@ -1,16 +1,16 @@
 use bevy::ecs::component::Tick;
 use bevy::{ecs::system::SystemState, prelude::*};
 use core::task::Context;
-use coroutine::{BoundTo, CoroState, Fib, WaitingReason, WaitingState};
+use coroutine::{OwnedBy, CoroState, Fib, WaitingReason, WaitingState};
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::Poll;
 use waker::create;
 
-mod coroutine;
+pub mod coroutine;
 mod waker;
 
 type CoroObject = Pin<Box<dyn Future<Output = ()>>>;
@@ -19,6 +19,7 @@ pub struct Executor {
     coroutines: HashMap<Entity, CoroObject>,
     receiver: Rc<Cell<Option<WaitingReason>>>,
     last_tick: Option<Tick>,
+    added: VecDeque<(CoroObject, Option<Entity>)>,
 }
 
 impl Executor {
@@ -27,40 +28,50 @@ impl Executor {
             coroutines: HashMap::new(),
             receiver: Rc::new(Cell::new(None)),
             last_tick: None,
+            added: VecDeque::new(),
         }
     }
 
-    pub fn add<C, F>(&mut self, mut c: Commands, closure: C)
+    pub fn add<C, F>(&mut self, closure: C)
     where
         F: Future<Output = ()> + 'static,
         C: FnOnce(Fib) -> F,
     {
-        let id = c.spawn(WaitingState::Ready).id();
         let fib = Fib {
             state: CoroState::Running,
-            id,
             sender: Rc::clone(&self.receiver),
         };
-
-        self.coroutines.insert(id, Box::pin(closure(fib)));
+        self.added.push_back((Box::pin(closure(fib)), None));
     }
 
-    pub fn add_to_entity<C, F>(&mut self, mut c: Commands, entity: Entity, closure: C)
+    pub fn add_to_entity<C, F>(&mut self, entity: Entity, closure: C)
     where
         F: Future<Output = ()> + 'static,
-        C: FnOnce(Fib) -> F,
+        C: FnOnce(Fib, Entity) -> F,
     {
-        let id = c.spawn((WaitingState::Ready, BoundTo(entity))).id();
         let fib = Fib {
             state: CoroState::Running,
-            id,
             sender: Rc::clone(&self.receiver),
         };
 
-        self.coroutines.insert(id, Box::pin(closure(fib)));
+        self.added
+            .push_back((Box::pin(closure(fib, entity)), Some(entity)));
     }
 
     pub fn run(&mut self, world: &mut World) {
+        while let Some((coroutine, owner)) = self.added.pop_front() {
+            match owner {
+                Some(owner) => {
+                    let id = world.spawn((WaitingState::Ready, OwnedBy(owner))).id();
+                    self.coroutines.insert(id, coroutine);
+                }
+                None => {
+                    let id = world.spawn(WaitingState::Ready).id();
+                    self.coroutines.insert(id, coroutine);
+                }
+            }
+        }
+
         let waker = create();
         let mut context = Context::from_waker(&waker);
 
