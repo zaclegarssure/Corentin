@@ -50,3 +50,11 @@ TODO: add examples of what is currently possible, and what api will be available
 
 # Contributions
 It's a bit early to accept contributions right now, but if you're interested, don't hesitate to play around with this crate and share your ideas.
+
+# License
+All code in `corentin` is licensed under either:
+
+- Apache License 2.0
+- MIT License
+
+at your option.
