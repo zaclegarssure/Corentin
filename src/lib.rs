@@ -10,7 +10,7 @@ pub mod prelude {
     #[doc(hidden)]
     pub use crate::executor::Executor;
     #[doc(hidden)]
-    pub use crate::coroutine;
+    pub use crate::coroutine::Fib;
 }
 
 
@@ -23,8 +23,7 @@ mod tests {
         time::Time,
     };
 
-    use crate::coroutine::Fib;
-    use crate::executor::Executor;
+    use crate::prelude::*;
 
     #[derive(Component)]
     struct ExampleComponent(u32);

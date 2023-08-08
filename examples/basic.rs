@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use bevy::prelude::*;
-use flep::prelude::*;
+use corentin::prelude::*;
 
 fn main() {
     App::new()

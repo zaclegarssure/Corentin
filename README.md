@@ -1,6 +1,6 @@
 <div align="center">
 
-# (I need to find a better name than Flep)
+# Corentin
 
 
 An experimental reactive coroutine plugin for [`Bevy`](https://github.com/bevyengine/bevy).

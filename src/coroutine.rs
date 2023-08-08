@@ -92,6 +92,7 @@ impl Fib {
     /// Returns a coroutine that resolve once the underlying coroutine finishes,
     /// in order to reuse coroutines, because the following won't compile:
     /// ```compile_fail
+    ///# use corentin::prelude::*;
     ///async fn sub_coro(mut fib: Fib) { }
     ///async fn main_coro(mut fib: Fib) {
     ///  sub_coro(fib).await;
@@ -100,6 +101,7 @@ impl Fib {
     ///```
     /// But the following will:
     ///```
+    ///# use corentin::prelude::*;
     ///async fn sub_coro(mut fib: Fib) { }
     ///async fn main_coro(mut fib: Fib) {
     ///  fib.on(sub_coro).await;
