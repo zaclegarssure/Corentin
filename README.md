@@ -30,13 +30,14 @@ Most features are not implemented yet and those that are available are pretty sl
  * Waiting for a certain amount of time.
  * Waiting for the next tick.
  * Waiting that a component from an entity change.
- * Spawning multiple coroutine and waiting for the first one to finish.
+ * Spawning multiple coroutine and waiting for the first one to finish (`ParOr`).
+ * Spawning multiple coroutine and waiting for all of them to finish (`ParAnd`).
 
-## What will be soon available
- * Make this an actual bevy plugin.
- * Spawning multiple coroutine and waiting for all of them to finish.
+## What will be soon available from coroutines
  * Getting immutable access to specific components from an entity.
  * Getting mutable access to specific components from an entity.
+ * Getting access to specific resources.
+ * Being able to run commands.
  * "Binding" a coroutine to some components of an entity, so that those can be conveniently accessed in the entire coroutine.
 
 ## What will be done way later
@@ -58,3 +59,5 @@ All code in `corentin` is licensed under either:
 - MIT License
 
 at your option.
+It's a bit early to accept contributions right now, but if you're interested,
+don't hesitate to play around with this crate and share your ideas.

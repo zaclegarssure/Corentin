@@ -138,6 +138,7 @@ impl Executor {
         self.ready.append(&mut self.waiting_on_tick);
 
         world.resource_scope(|w, time: Mut<Time>| {
+            // Tick all coroutines waiting on duration
             for (t, _) in self.waiting_on_duration.iter_mut() {
                 t.tick(time.delta());
             }
@@ -150,6 +151,7 @@ impl Executor {
 
             let mut to_despawn = vec![];
 
+            // Check all coroutines waiting on change
             self.waiting_on_change.retain(|(e, c), coro| {
                 if let Some(e) = w.get_entity(*e) {
                     if let Some(t) = e.get_change_ticks_by_id(*c) {
@@ -172,6 +174,7 @@ impl Executor {
             }
         });
 
+        // Run the coroutines
         while let Some(coro) = self.ready.pop_front() {
             if !self.coroutines.contains_key(&coro) {
                 continue;
@@ -229,7 +232,6 @@ impl Executor {
                 Poll::Ready(_) => {
                     match self.is_awaited_by.remove(&coro) {
                         Some(parent) => {
-                            // TODO fix despawning
                             if let Some(others) = self.waiting_on_par_or.remove(&parent) {
                                 // coro is the "winner", all the others are cancelled
                                 for o in others {
@@ -242,6 +244,7 @@ impl Executor {
                                 others.remove(index);
                                 if others.len() == 0 {
                                     self.ready.push_back(parent);
+                                    self.waiting_on_par_and.remove(&parent);
                                 }
                                 world.despawn(coro);
                                 self.coroutines.remove(&coro);
@@ -255,5 +258,50 @@ impl Executor {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Executor;
+    use bevy::{
+        prelude::{Mut, World},
+        time::Time,
+    };
+    use std::time::Instant;
+
+    #[test]
+    fn par_or_despawn_correctly() {
+        let mut world = World::new();
+        world.insert_non_send_resource(Executor::new());
+        world.insert_resource(Time::new(Instant::now()));
+        world.non_send_resource_scope(|w, mut executor: Mut<Executor>| {
+            executor.add(move |mut fib| async move {
+                fib.par_or(|mut fib| async move {
+                    loop {
+                        fib.next_tick().await;
+                    }
+                })
+                .with(|mut fib| async move {
+                    for _ in 0..4 {
+                        fib.next_tick().await;
+                    }
+                })
+                .await;
+            });
+
+            executor.run(w);
+            assert_eq!(executor.is_awaited_by.len(), 2);
+            assert_eq!(executor.waiting_on_par_or.len(), 1);
+            assert_eq!(executor.coroutines.len(), 3);
+
+            for _ in 0..5 {
+                executor.run(w);
+            }
+
+            assert_eq!(executor.is_awaited_by.len(), 0);
+            assert_eq!(executor.waiting_on_par_or.len(), 0);
+            assert_eq!(executor.coroutines.len(), 0);
+        });
     }
 }
