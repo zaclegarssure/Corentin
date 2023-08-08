@@ -14,7 +14,7 @@ use bevy::prelude::Timer;
 use bevy::time::TimerMode;
 use pin_project::pin_project;
 
-use crate::CoroObject;
+use crate::executor::CoroObject;
 
 #[derive(PartialEq, Eq)]
 pub(crate) enum CoroState {
@@ -29,6 +29,8 @@ pub(crate) enum WaitingReason {
     WaitOnParOr { coroutines: Vec<CoroObject> },
 }
 
+/// A "Fiber" object, througth which a coroutine
+/// can interact with the rest of the world.
 pub struct Fib {
     pub(crate) state: CoroState,
     // Maybe replace by a real sender receiver channel at some point
@@ -37,10 +39,18 @@ pub struct Fib {
 }
 
 impl Fib {
+    /// Returns coroutine that resolve the next time the [`Executor`] is ticked (via
+    /// [`run`][crate::executor::Executor::run] for instance).
+    ///
+    /// [`Executor`]: crate::executor::Executor
     pub fn next_tick<'a>(&'a mut self) -> NextTick<'a> {
         NextTick { fib: self }
     }
 
+    /// Returns a coroutine that resolve after a certain [`Duration`]. Note that if the duration
+    /// is smaller than the time between two tick of the [`Executor`] it won't be compensated.
+    ///
+    /// [`Executor`]: crate::executor::Executor
     pub fn duration<'a>(&'a mut self, duration: Duration) -> DurationFuture<'a> {
         DurationFuture {
             fib: self,
@@ -48,6 +58,9 @@ impl Fib {
         }
     }
 
+    /// Returns a coroutine that resolve once the [`Component`] of type `T` from a particular
+    /// [`Entity`] has changed. Note that if the entity or the components is removed,
+    /// this coroutine is dropped.
     pub fn change<'a, T: Component + Unpin>(&'a mut self, from: Entity) -> Change<'a, T> {
         Change {
             fib: self,
@@ -56,6 +69,9 @@ impl Fib {
         }
     }
 
+    /// Returns a coroutine that resolve once any of the underlying coroutine finishes. Note that
+    /// once this is done, all the others are dropped. The coroutines are resumed from top to
+    /// bottom, in case multiple of them are ready to make progress at the same time.
     pub fn par_or<'a, C, F>(&'a mut self, closure: C) -> ParOr<'a>
     where
         F: Future<Output = ()> + 'static,
@@ -73,6 +89,23 @@ impl Fib {
         }
     }
 
+    /// Returns a coroutine that resolve once the underlying coroutine finishes,
+    /// in order to reuse coroutines, because the following won't compile:
+    /// ```compile_fail
+    ///async fn sub_coro(mut fib: Fib) { }
+    ///async fn main_coro(mut fib: Fib) {
+    ///  sub_coro(fib).await;
+    ///  sub_coro(fib).await;
+    ///}
+    ///```
+    /// But the following will:
+    ///```
+    ///async fn sub_coro(mut fib: Fib) { }
+    ///async fn main_coro(mut fib: Fib) {
+    ///  fib.on(sub_coro).await;
+    ///  fib.on(sub_coro).await;
+    ///}
+    ///```
     pub fn on<'a, C, F>(&'a mut self, closure: C) -> On<'a, F>
     where
         F: Future<Output = ()> + 'static,
@@ -90,6 +123,8 @@ impl Fib {
         }
     }
 
+    /// Same as [`Self::on()`] but with a coroutine that expect
+    /// an owner entity as a parameter.
     pub fn on_self<'a, C, F>(&'a mut self, closure: C) -> On<'a, F>
     where
         F: Future<Output = ()> + 'static,
@@ -231,6 +266,8 @@ impl<'a> Future for ParOr<'a> {
 }
 
 impl<'a> ParOr<'a> {
+    /// Add a new coroutine to this [`ParOr`]. It will have a lower priority than those defined
+    /// above.
     pub fn with<C, F>(mut self, closure: C) -> Self
     where
         F: Future<Output = ()> + 'static,
