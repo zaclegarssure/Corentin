@@ -161,4 +161,39 @@ mod tests {
             }
         });
     }
+
+
+    #[test]
+    fn waiting_on_par_and() {
+        let mut world = World::new();
+        world.insert_non_send_resource(Executor::new());
+        world.insert_resource(Time::new(Instant::now()));
+        world.non_send_resource_scope(|w, mut executor: Mut<Executor>| {
+            let a = Rc::new(RefCell::new(0));
+            let b = Rc::clone(&a);
+            let c = Rc::clone(&a);
+            executor.add(move |mut fib| async move {
+                fib.par_and(|mut fib| async move {
+                    fib.next_tick().await;
+                    *b.borrow_mut() += 1;
+                })
+                .with(|mut fib| async move {
+                    for _ in 0..2 {
+                        fib.next_tick().await;
+                        *c.borrow_mut() += 1;
+                    }
+                })
+                .await;
+            });
+
+            executor.run(w);
+            assert_eq!(*a.borrow_mut(), 0);
+            executor.run(w);
+            assert_eq!(*a.borrow_mut(), 2);
+            executor.run(w);
+            assert_eq!(*a.borrow_mut(), 3);
+            executor.run(w);
+            assert_eq!(*a.borrow_mut(), 3);
+        });
+    }
 }

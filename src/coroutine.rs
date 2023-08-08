@@ -27,6 +27,7 @@ pub(crate) enum WaitingReason {
     WaitOnDuration(Timer),
     WaitOnChange { from: Entity, type_id: TypeId },
     WaitOnParOr { coroutines: Vec<CoroObject> },
+    WaitOnParAnd { coroutines: Vec<CoroObject> },
 }
 
 /// A "Fiber" object, througth which a coroutine
@@ -145,6 +146,26 @@ impl Fib {
         On {
             fib: self,
             coroutine: fut,
+        }
+    }
+
+    /// Returns a coroutine that resolve once all of the underlying coroutine finishes. The
+    /// coroutines are resumed from top to bottom, in case multiple of them are ready to make
+    /// progress at the same time.
+    pub fn par_and<'a, C, F>(&'a mut self, closure: C) -> ParAnd<'a>
+    where
+        F: Future<Output = ()> + 'static,
+        C: FnOnce(Fib) -> F,
+    {
+        let fib = Fib {
+            state: CoroState::Running,
+            sender: Rc::clone(&self.sender),
+            owner: self.owner,
+        };
+        let fut = Box::pin(closure(fib));
+        ParAnd {
+            fib: self,
+            coroutines: vec![fut],
         }
     }
 
@@ -270,7 +291,58 @@ impl<'a> Future for ParOr<'a> {
 impl<'a> ParOr<'a> {
     /// Add a new coroutine to this [`ParOr`]. It will have a lower priority than those defined
     /// above.
-    pub fn with<C, F>(mut self, closure: C) -> Self
+    pub fn with<C, F>(&mut self, closure: C) -> &mut Self
+    where
+        F: Future<Output = ()> + 'static,
+        C: FnOnce(Fib) -> F,
+    {
+        let fib = Fib {
+            state: CoroState::Running,
+            sender: Rc::clone(&self.fib.sender),
+            owner: self.fib.owner,
+        };
+        let fut = Box::pin(closure(fib));
+        self.coroutines.push(fut);
+        self
+    }
+}
+
+
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+pub struct ParAnd<'a> {
+    fib: &'a mut Fib,
+    coroutines: Vec<Pin<Box<(dyn Future<Output = ()> + 'static)>>>,
+}
+
+impl<'a> Future for ParAnd<'a> {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Self::Output> {
+        match self.fib.state {
+            // We assume the executor will only poll it once all the coroutines have finish executing
+            CoroState::Halted => {
+                self.fib.state = CoroState::Running;
+                Poll::Ready(())
+            }
+            CoroState::Running => {
+                self.fib.state = CoroState::Halted;
+                // TODO: Will care about performance later, maybe find a way to inline the coroutines
+                // instead of allocating them on the heap ?
+                let temp: Vec<Pin<Box<dyn Future<Output = ()>>>> =
+                    self.coroutines.drain(..).collect();
+                self.fib
+                    .sender
+                    .replace(Some(WaitingReason::WaitOnParAnd { coroutines: temp }));
+                Poll::Pending
+            }
+        }
+    }
+}
+
+impl<'a> ParAnd<'a> {
+    /// Add a new coroutine to this [`ParAnd`]. It will have a lower priority than those defined
+    /// above.
+    pub fn with<C, F>(&mut self, closure: C) -> &mut Self
     where
         F: Future<Output = ()> + 'static,
         C: FnOnce(Fib) -> F,

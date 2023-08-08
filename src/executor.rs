@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::task::Poll;
 use waker::create;
 
-use crate::{waker, coroutine};
+use crate::{coroutine, waker};
 
 pub(crate) type CoroObject = Pin<Box<dyn Future<Output = ()>>>;
 
@@ -83,7 +83,7 @@ impl Executor {
     }
 
     /// Drop a coroutine from the executor.
-    pub fn remove(&mut self, world: &mut World, coroutine: CoroId) {
+    pub fn cancel(&mut self, world: &mut World, coroutine: CoroId) {
         if !self.coroutines.contains_key(&coroutine) {
             return;
         }
@@ -92,12 +92,12 @@ impl Executor {
 
         if let Some(others) = self.waiting_on_par_or.remove(&coroutine) {
             for o in others {
-                self.remove(world, o);
+                self.cancel(world, o);
             }
         }
         if let Some(others) = self.waiting_on_par_and.remove(&coroutine) {
             for o in others {
-                self.remove(world, o);
+                self.cancel(world, o);
             }
         }
 
@@ -105,7 +105,7 @@ impl Executor {
             // In case of a ParOr that might be not what's always needed
             // But in any case this API will be reworked if I can figure out
             // how to "inline" ParOr and ParAnd
-            self.remove(world, parent);
+            self.cancel(world, parent);
         }
 
         world.despawn(coroutine);
@@ -168,7 +168,7 @@ impl Executor {
             });
 
             for c in to_despawn {
-                self.remove(w, c);
+                self.cancel(w, c);
             }
         });
 
@@ -211,26 +211,45 @@ impl Executor {
                             let prev = self.waiting_on_par_or.insert(parent, all_ids);
                             assert!(prev.is_none());
                         }
+                        WaitingReason::WaitOnParAnd { coroutines } => {
+                            let parent = coro;
+                            let mut all_ids = Vec::with_capacity(coroutines.len());
+                            for coroutine in coroutines {
+                                let id = world.spawn_empty().id();
+                                self.coroutines.insert(id, coroutine);
+                                self.ready.push_back(id);
+                                self.is_awaited_by.insert(id, parent);
+                                all_ids.push(id);
+                            }
+                            let prev = self.waiting_on_par_and.insert(parent, all_ids);
+                            assert!(prev.is_none());
+                        }
                     };
                 }
                 Poll::Ready(_) => {
-                    // Todo check if another coroutine waits on the result
                     match self.is_awaited_by.remove(&coro) {
                         Some(parent) => {
+                            // TODO fix despawning
                             if let Some(others) = self.waiting_on_par_or.remove(&parent) {
                                 // coro is the "winner", all the others are cancelled
                                 for o in others {
-                                    world.despawn(o);
-                                    self.coroutines.remove(&o);
+                                    self.cancel(world, o);
                                 }
                                 self.ready.push_back(parent);
                             }
-                            if let Some(__others) = self.waiting_on_par_and.get_mut(&parent) {
-                                todo!();
+                            if let Some(others) = self.waiting_on_par_and.get_mut(&parent) {
+                                let index = others.iter().position(|c| *c == coro).unwrap();
+                                others.remove(index);
+                                if others.len() == 0 {
+                                    self.ready.push_back(parent);
+                                }
+                                world.despawn(coro);
+                                self.coroutines.remove(&coro);
                             }
                         }
                         None => {
-                            self.remove(world, coro);
+                            world.despawn(coro);
+                            self.coroutines.remove(&coro);
                         }
                     }
                 }
