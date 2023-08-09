@@ -204,7 +204,9 @@ impl<'a> Future for NextTick<'a> {
 
                 // SAFETY: None lmao
                 let dt = unsafe {
-                    (*self.fib.world_window.get().unwrap()).resource::<Time>().delta()
+                    (*self.fib.world_window.get().unwrap())
+                        .resource::<Time>()
+                        .delta()
                 };
                 Poll::Ready(dt)
             }
@@ -427,7 +429,7 @@ where
 }
 
 //#[pin_project]
-//pub struct Requesting<'a, T, F, O> 
+//pub struct Requesting<'a, T, F, O>
 //where
 //    T: Component,
 //    F: Future<Output = O> + 'static, {
