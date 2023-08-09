@@ -10,12 +10,15 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-
+  ci:
+    name: CI
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v3
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy, rustfmt
 
     - name: Install alsa and udev
       run: sudo apt-get update -yq; sudo apt-get install -yq --no-install-recommends libasound2-dev libudev-dev
@@ -26,8 +29,8 @@ jobs:
     - name: fmt
       run: cargo fmt --all -- --check
 
-    - name: check
-      run: cargo check
+    - name: build
+      run: cargo build
 
     - name: clippy
       run: cargo clippy -- -D warnings

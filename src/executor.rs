@@ -11,10 +11,11 @@ use waker::create;
 
 use crate::{coroutine, waker};
 
-pub(crate) type CoroObject = Pin<Box<dyn Future<Output = ()>>>;
+pub(crate) type CoroObject = Pin<Box<dyn Future<Output = ()> + Send + Sync>>;
 
 type CoroId = Entity;
 
+#[derive(Resource)]
 pub struct Executor {
     coroutines: HashMap<Entity, CoroObject>,
     receiver: Rc<Cell<Option<WaitingReason>>>,
@@ -28,6 +29,11 @@ pub struct Executor {
     is_awaited_by: HashMap<CoroId, CoroId>,
     own: HashMap<Entity, Vec<CoroId>>,
 }
+
+// SAFETY: This is safe because the only !Send and !Sync field (receiver) is only accessed
+// when calling run(), which is done in a single threaded context.
+unsafe impl Send for Executor {}
+unsafe impl Sync for Executor {}
 
 const ERR_WRONGAWAIT: &str = "A coroutine yielded without notifying the executor
 the reason. That is most likely because it awaits a
@@ -54,7 +60,7 @@ impl Executor {
     /// Add a coroutine to the executor.
     pub fn add<C, F>(&mut self, closure: C)
     where
-        F: Future<Output = ()> + 'static,
+        F: Future<Output = ()> + 'static + Send + Sync,
         C: FnOnce(Fib) -> F,
     {
         let fib = Fib {
@@ -69,7 +75,7 @@ impl Executor {
     /// If the entity is removed, the coroutine is dropped.
     pub fn add_to_entity<C, F>(&mut self, entity: Entity, closure: C)
     where
-        F: Future<Output = ()> + 'static,
+        F: Future<Output = ()> + 'static + Send + Sync,
         C: FnOnce(Fib, Entity) -> F,
     {
         let fib = Fib {
@@ -271,9 +277,9 @@ mod tests {
     #[test]
     fn par_or_despawn_correctly() {
         let mut world = World::new();
-        world.insert_non_send_resource(Executor::new());
+        world.insert_resource(Executor::new());
         world.insert_resource(Time::new(Instant::now()));
-        world.non_send_resource_scope(|w, mut executor: Mut<Executor>| {
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
             executor.add(move |mut fib| async move {
                 fib.par_or(|mut fib| async move {
                     loop {

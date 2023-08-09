@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bevy = { git = "https://github.com/zaclegarssure/bevy", branch = "nonsend_scope", features = ["dynamic_linking"] }
+bevy = { version = "0.11.0", features = ["dynamic_linking"] }
 pin-project = "1"
 
 [profile.dev]

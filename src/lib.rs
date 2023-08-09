@@ -15,7 +15,10 @@ pub mod prelude {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, rc::Rc, time::Instant};
+    use std::{
+        sync::{Arc, Mutex},
+        time::Instant,
+    };
 
     use bevy::{
         prelude::{Component, Mut, World},
@@ -30,26 +33,26 @@ mod tests {
     #[test]
     fn wait_on_tick() {
         let mut world = World::new();
-        world.insert_non_send_resource(Executor::new());
+        world.insert_resource(Executor::new());
         world.insert_resource(Time::new(Instant::now()));
-        world.non_send_resource_scope(|w, mut executor: Mut<Executor>| {
-            let a = Rc::new(RefCell::new(0));
-            let b = Rc::clone(&a);
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
+            let a = Arc::new(Mutex::new(0));
+            let b = Arc::clone(&a);
             executor.add(move |mut fib| async move {
-                *b.borrow_mut() += 1;
+                *b.lock().unwrap() += 1;
                 fib.next_tick().await;
-                *b.borrow_mut() += 1;
+                *b.lock().unwrap() += 1;
                 fib.next_tick().await;
-                *b.borrow_mut() += 1;
+                *b.lock().unwrap() += 1;
             });
             executor.run(w);
-            assert_eq!(*a.borrow(), 1);
+            assert_eq!(*a.lock().unwrap(), 1);
             executor.run(w);
-            assert_eq!(*a.borrow(), 2);
+            assert_eq!(*a.lock().unwrap(), 2);
             executor.run(w);
-            assert_eq!(*a.borrow(), 3);
+            assert_eq!(*a.lock().unwrap(), 3);
             executor.run(w);
-            assert_eq!(*a.borrow(), 3);
+            assert_eq!(*a.lock().unwrap(), 3);
         });
     }
 
@@ -61,53 +64,53 @@ mod tests {
         }
 
         let mut world = World::new();
-        world.insert_non_send_resource(Executor::new());
+        world.insert_resource(Executor::new());
         world.insert_resource(Time::new(Instant::now()));
-        world.non_send_resource_scope(|w, mut executor: Mut<Executor>| {
-            let a = Rc::new(RefCell::new(0));
-            let b = Rc::clone(&a);
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
+            let a = Arc::new(Mutex::new(0));
+            let b = Arc::clone(&a);
             executor.add(move |mut fib| async move {
-                *b.borrow_mut() += 1;
+                *b.lock().unwrap() += 1;
                 fib.on(sub_coro).await;
-                *b.borrow_mut() += 1;
+                *b.lock().unwrap() += 1;
             });
             executor.run(w);
-            assert_eq!(*a.borrow(), 1);
+            assert_eq!(*a.lock().unwrap(), 1);
             executor.run(w);
-            assert_eq!(*a.borrow(), 1);
+            assert_eq!(*a.lock().unwrap(), 1);
             executor.run(w);
-            assert_eq!(*a.borrow(), 2);
+            assert_eq!(*a.lock().unwrap(), 2);
             executor.run(w);
-            assert_eq!(*a.borrow(), 2);
+            assert_eq!(*a.lock().unwrap(), 2);
         });
     }
 
     #[test]
     fn wait_on_change() {
         let mut world = World::new();
-        world.insert_non_send_resource(Executor::new());
+        world.insert_resource(Executor::new());
         world.insert_resource(Time::new(Instant::now()));
-        world.non_send_resource_scope(|w, mut executor: Mut<Executor>| {
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
             let e = w.spawn(ExampleComponent(0)).id();
-            let a = Rc::new(RefCell::new(0));
-            let b = Rc::clone(&a);
+            let a = Arc::new(Mutex::new(0));
+            let b = Arc::clone(&a);
             executor.add(move |mut fib| async move {
                 fib.next_tick().await;
                 fib.change::<ExampleComponent>(e).await;
-                *b.borrow_mut() += 1;
+                *b.lock().unwrap() += 1;
             });
             executor.run(w);
-            assert_eq!(*a.borrow(), 0);
+            assert_eq!(*a.lock().unwrap(), 0);
             w.clear_trackers();
             executor.run(w);
-            assert_eq!(*a.borrow(), 0);
+            assert_eq!(*a.lock().unwrap(), 0);
             executor.run(w);
-            assert_eq!(*a.borrow(), 0);
+            assert_eq!(*a.lock().unwrap(), 0);
             w.entity_mut(e).get_mut::<ExampleComponent>().unwrap().0 += 1;
             executor.run(w);
-            assert_eq!(*a.borrow(), 1);
+            assert_eq!(*a.lock().unwrap(), 1);
             executor.run(w);
-            assert_eq!(*a.borrow(), 1);
+            assert_eq!(*a.lock().unwrap(), 1);
         });
     }
 
@@ -118,9 +121,9 @@ mod tests {
             std::future::pending::<()>().await;
         }
         let mut world = World::new();
-        world.insert_non_send_resource(Executor::new());
+        world.insert_resource(Executor::new());
         world.insert_resource(Time::new(Instant::now()));
-        world.non_send_resource_scope(|w, mut executor: Mut<Executor>| {
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
             executor.add(move |_| async move {
                 external_future().await;
             });
@@ -131,16 +134,16 @@ mod tests {
     #[test]
     fn waiting_on_par_or() {
         let mut world = World::new();
-        world.insert_non_send_resource(Executor::new());
+        world.insert_resource(Executor::new());
         world.insert_resource(Time::new(Instant::now()));
-        world.non_send_resource_scope(|w, mut executor: Mut<Executor>| {
-            let a = Rc::new(RefCell::new(0));
-            let b = Rc::clone(&a);
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
+            let a = Arc::new(Mutex::new(0));
+            let b = Arc::clone(&a);
             executor.add(move |mut fib| async move {
                 fib.par_or(|mut fib| async move {
                     loop {
                         fib.next_tick().await;
-                        *b.borrow_mut() += 1;
+                        *b.lock().unwrap() += 1;
                     }
                 })
                 .with(|mut fib| async move {
@@ -156,7 +159,7 @@ mod tests {
                 // has priority over the one on the bottom, meaning its side effect will be
                 // seen on the last iteration.
                 executor.run(w);
-                assert_eq!(*a.borrow_mut(), i);
+                assert_eq!(*a.lock().unwrap(), i);
             }
         });
     }
@@ -164,34 +167,34 @@ mod tests {
     #[test]
     fn waiting_on_par_and() {
         let mut world = World::new();
-        world.insert_non_send_resource(Executor::new());
+        world.insert_resource(Executor::new());
         world.insert_resource(Time::new(Instant::now()));
-        world.non_send_resource_scope(|w, mut executor: Mut<Executor>| {
-            let a = Rc::new(RefCell::new(0));
-            let b = Rc::clone(&a);
-            let c = Rc::clone(&a);
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
+            let a = Arc::new(Mutex::new(0));
+            let b = Arc::clone(&a);
+            let c = Arc::clone(&a);
             executor.add(move |mut fib| async move {
                 fib.par_and(|mut fib| async move {
                     fib.next_tick().await;
-                    *b.borrow_mut() += 1;
+                    *b.lock().unwrap() += 1;
                 })
                 .with(|mut fib| async move {
                     for _ in 0..2 {
                         fib.next_tick().await;
-                        *c.borrow_mut() += 1;
+                        *c.lock().unwrap() += 1;
                     }
                 })
                 .await;
             });
 
             executor.run(w);
-            assert_eq!(*a.borrow_mut(), 0);
+            assert_eq!(*a.lock().unwrap(), 0);
             executor.run(w);
-            assert_eq!(*a.borrow_mut(), 2);
+            assert_eq!(*a.lock().unwrap(), 2);
             executor.run(w);
-            assert_eq!(*a.borrow_mut(), 3);
+            assert_eq!(*a.lock().unwrap(), 3);
             executor.run(w);
-            assert_eq!(*a.borrow_mut(), 3);
+            assert_eq!(*a.lock().unwrap(), 3);
         });
     }
 }
