@@ -59,5 +59,3 @@ All code in `corentin` is licensed under either:
 - MIT License
 
 at your option.
-It's a bit early to accept contributions right now, but if you're interested,
-don't hesitate to play around with this crate and share your ideas.
