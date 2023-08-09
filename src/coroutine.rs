@@ -8,6 +8,7 @@ use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
 
+use bevy::ecs::component::ComponentId;
 use bevy::prelude::Component;
 use bevy::prelude::Entity;
 use bevy::prelude::Timer;
@@ -27,9 +28,32 @@ pub(crate) enum CoroState {
 pub(crate) enum WaitingReason {
     Tick,
     Duration(Timer),
-    Change { from: Entity, type_id: TypeId },
-    ParOr { coroutines: Vec<CoroObject> },
-    ParAnd { coroutines: Vec<CoroObject> },
+    Change {
+        from: Entity,
+        component: ComponentId,
+    },
+    ChangeWith {
+        from: Entity,
+        component: ComponentId,
+        with: Vec<ComponentId>,
+        without: Vec<ComponentId>,
+    },
+    Added {
+        from: Entity,
+        component: ComponentId,
+    },
+    AddedWith {
+        from: Entity,
+        component: ComponentId,
+        with: Vec<ComponentId>,
+        without: Vec<ComponentId>,
+    },
+    ParOr {
+        coroutines: Vec<CoroObject>,
+    },
+    ParAnd {
+        coroutines: Vec<CoroObject>,
+    },
 }
 
 /// A "Fiber" object, througth which a coroutine
@@ -41,6 +65,33 @@ pub struct Fib {
     pub(crate) sender: Rc<Cell<Option<WaitingReason>>>,
     pub(crate) owner: Option<Entity>,
     pub(crate) world_window: Rc<Cell<Option<*mut World>>>,
+}
+
+impl Fib {
+    fn component_id<T: Component>(&self) -> ComponentId {
+        // SAFETY: We are in the polling phase, therefore the coroutine is the only one running.
+        unsafe {
+            let w = &mut *self
+                .world_window
+                .get()
+                .expect("This function should have been called when a coroutine is polled");
+            w.component_id::<T>()
+                .expect("Component should have been initialized in the world")
+        }
+    }
+
+    fn get_component_id(&self, tid: TypeId) -> ComponentId {
+        // SAFETY: We are in the polling phase, therefore the coroutine is the only one running.
+        unsafe {
+            let w = &mut *self
+                .world_window
+                .get()
+                .expect("This function should have been called when a coroutine is polled");
+            w.components()
+                .get_id(tid)
+                .expect("Component should have been initialized in the world")
+        }
+    }
 }
 
 // SAFETY: Same as Executor, the sender field is only accessed when polled,
@@ -262,7 +313,7 @@ impl<'a> Future for DurationFuture<'a> {
 }
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct Change<'a, T: Component + Unpin> {
+pub struct Change<'a, T: Component> {
     fib: &'a mut Fib,
     from: Entity,
     _phantom: PhantomData<T>,
@@ -279,14 +330,93 @@ impl<'a, T: Component + Unpin> Future for Change<'a, T> {
                 Poll::Ready(())
             }
             CoroState::Running => {
+                let c_id = self.fib.component_id::<T>();
                 self.fib.state = CoroState::Halted;
                 self.fib.sender.replace(Some(WaitingReason::Change {
                     from: self.from,
-                    type_id: TypeId::of::<T>(),
+                    component: c_id,
                 }));
                 Poll::Pending
             }
         }
+    }
+}
+
+impl<'a, T: Component> Change<'a, T> {
+    pub fn with<C: 'static>(self) -> ChangeWith<'a, T> {
+        ChangeWith {
+            fib: self.fib,
+            from: self.from,
+            _phantom: PhantomData,
+            with: vec![TypeId::of::<C>()],
+            without: Vec::new(),
+        }
+    }
+
+    pub fn without<C: 'static>(self) -> ChangeWith<'a, T> {
+        ChangeWith {
+            fib: self.fib,
+            from: self.from,
+            _phantom: PhantomData,
+            with: Vec::new(),
+            without: vec![TypeId::of::<C>()],
+        }
+    }
+}
+
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+pub struct ChangeWith<'a, T: Component> {
+    fib: &'a mut Fib,
+    from: Entity,
+    _phantom: PhantomData<T>,
+    // TODO: make that more efficient and more robust (and not rely on TypeId)
+    with: Vec<TypeId>,
+    without: Vec<TypeId>,
+}
+
+impl<'a, T: Component + Unpin> Future for ChangeWith<'a, T> {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.fib.state {
+            CoroState::Halted => {
+                self.fib.state = CoroState::Running;
+                Poll::Ready(())
+            }
+            CoroState::Running => {
+                let c_id = self.fib.component_id::<T>();
+                let with: Vec<ComponentId> = self
+                    .with
+                    .iter()
+                    .map(|tid| self.fib.get_component_id(*tid))
+                    .collect();
+                let without: Vec<ComponentId> = self
+                    .without
+                    .iter()
+                    .map(|tid| self.fib.get_component_id(*tid))
+                    .collect();
+                self.fib.state = CoroState::Halted;
+                self.fib.sender.replace(Some(WaitingReason::ChangeWith {
+                    from: self.from,
+                    component: c_id,
+                    with,
+                    without,
+                }));
+                Poll::Pending
+            }
+        }
+    }
+}
+
+impl<'a, T: Component> ChangeWith<'a, T> { 
+    pub fn with<C: 'static>(&mut self) -> &mut Self {
+        self.with.push(TypeId::of::<C>());
+        self
+    }
+
+    pub fn without<C: 'static>(&mut self) -> &mut Self {
+        self.without.push(TypeId::of::<C>());
+        self
     }
 }
 
@@ -427,37 +557,3 @@ where
         }
     }
 }
-
-//#[pin_project]
-//pub struct Requesting<'a, T, F, O>
-//where
-//    T: Component,
-//    F: Future<Output = O> + 'static, {
-//    #[pin]
-//    coroutine: F,
-//    fib: &'a mut Fib,
-//    from: Entity,
-//    _phantom: PhantomData<&'a T>,
-//}
-//
-//impl<'a, T, F, O> Future for Requesting<'a, T, F, O>
-//where
-//    T: Component,
-//    F: Future<Output = O> + 'static,
-//{
-//    type Output = (O, bevy::prelude::Ref<'a, T>);
-//
-//    fn poll(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Self::Output> {
-//        let this = self.project();
-//        match this.coroutine.poll(_cx) {
-//            Poll::Pending => Poll::Pending,
-//            Poll::Ready(o) => {
-//                // SAFETY: It's like pretty late right now and I'm tired so idk...
-//                let component = unsafe {
-//                    (*this.fib.world_window.get().unwrap()).entity(*this.from).get_ref::<T>().unwrap()
-//                };
-//                Poll::Ready((o, component))
-//            }
-//        }
-//    }
-//}

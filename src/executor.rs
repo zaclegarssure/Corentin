@@ -203,8 +203,7 @@ impl Executor {
                     match msg {
                         WaitingReason::Tick => self.waiting_on_tick.push_back(coro),
                         WaitingReason::Duration(d) => self.waiting_on_duration.push_back((d, coro)),
-                        WaitingReason::Change { from, type_id } => {
-                            let component_id = world.components().get_id(type_id).unwrap();
+                        WaitingReason::Change { from, component: component_id } => {
                             self.waiting_on_change
                                 .entry((from, component_id))
                                 .or_insert_with(Vec::new)
@@ -236,6 +235,9 @@ impl Executor {
                             let prev = self.waiting_on_par_and.insert(parent, all_ids);
                             assert!(prev.is_none());
                         }
+                        WaitingReason::ChangeWith { from: _, component: _, with: _, without: _ } => todo!(),
+                        WaitingReason::Added { from: _, component: _ } => todo!(),
+                        WaitingReason::AddedWith { from: _, component: _, with: _, without: _ } => todo!(),
                     };
                 }
                 Poll::Ready(_) => {
