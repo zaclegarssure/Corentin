@@ -5,6 +5,7 @@ pub mod executor;
 pub mod coroutine;
 
 mod waker;
+mod world_window;
 
 pub mod prelude {
     #[doc(hidden)]

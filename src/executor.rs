@@ -27,6 +27,7 @@ pub struct Executor {
     waiting_on_par_and: HashMap<CoroId, Vec<CoroId>>,
     is_awaited_by: HashMap<CoroId, CoroId>,
     own: HashMap<Entity, Vec<CoroId>>,
+    world_window: Rc<Cell<Option<*mut World>>>,
 }
 
 const ERR_WRONGAWAIT: &'static str = "A coroutine yielded without notifying the executor
@@ -47,7 +48,7 @@ impl Executor {
             waiting_on_par_and: HashMap::new(),
             is_awaited_by: HashMap::new(),
             own: HashMap::new(),
-            //waiting_
+            world_window: Rc::new(Cell::new(None)),
         }
     }
 
@@ -61,6 +62,7 @@ impl Executor {
             state: CoroState::Running,
             sender: Rc::clone(&self.receiver),
             owner: None,
+            world_window: Rc::clone(&self.world_window),
         };
         self.added.push_back((Box::pin(closure(fib)), None));
     }
@@ -76,6 +78,7 @@ impl Executor {
             state: CoroState::Running,
             sender: Rc::clone(&self.receiver),
             owner: Some(entity),
+            world_window: Rc::clone(&self.world_window),
         };
 
         self.added
@@ -175,6 +178,8 @@ impl Executor {
         });
 
         // Run the coroutines
+        self.world_window.replace(Some(world as *mut _));
+
         while let Some(coro) = self.ready.pop_front() {
             if !self.coroutines.contains_key(&coro) {
                 continue;
@@ -258,6 +263,8 @@ impl Executor {
                 }
             }
         }
+
+        self.world_window.replace(None);
     }
 }
 

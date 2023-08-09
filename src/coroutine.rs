@@ -11,12 +11,14 @@ use std::time::Duration;
 use bevy::prelude::Component;
 use bevy::prelude::Entity;
 use bevy::prelude::Timer;
+use bevy::prelude::World;
+use bevy::time::Time;
 use bevy::time::TimerMode;
 use pin_project::pin_project;
 
 use crate::executor::CoroObject;
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Clone, Copy)]
 pub(crate) enum CoroState {
     Halted,
     Running,
@@ -32,16 +34,19 @@ pub(crate) enum WaitingReason {
 
 /// A "Fiber" object, througth which a coroutine
 /// can interact with the rest of the world.
+#[derive(Clone)]
 pub struct Fib {
     pub(crate) state: CoroState,
     // Maybe replace by a real sender receiver channel at some point
     pub(crate) sender: Rc<Cell<Option<WaitingReason>>>,
     pub(crate) owner: Option<Entity>,
+    pub(crate) world_window: Rc<Cell<Option<*mut World>>>,
 }
 
 impl Fib {
     /// Returns coroutine that resolve the next time the [`Executor`] is ticked (via
-    /// [`run`][crate::executor::Executor::run] for instance).
+    /// [`run`][crate::executor::Executor::run] for instance). It returns the duration
+    /// of the last frame (delta time).
     ///
     /// [`Executor`]: crate::executor::Executor
     pub fn next_tick<'a>(&'a mut self) -> NextTick<'a> {
@@ -82,6 +87,7 @@ impl Fib {
             state: CoroState::Running,
             sender: Rc::clone(&self.sender),
             owner: self.owner,
+            world_window: Rc::clone(&self.world_window),
         };
         let fut = Box::pin(closure(fib));
         ParOr {
@@ -118,6 +124,7 @@ impl Fib {
             state: CoroState::Running,
             sender: Rc::clone(&self.sender),
             owner: self.owner,
+            world_window: Rc::clone(&self.world_window),
         };
         let fut = closure(fib);
         On {
@@ -137,6 +144,7 @@ impl Fib {
             state: CoroState::Running,
             sender: Rc::clone(&self.sender),
             owner: self.owner,
+            world_window: Rc::clone(&self.world_window),
         };
         let fut = closure(
             fib,
@@ -161,6 +169,7 @@ impl Fib {
             state: CoroState::Running,
             sender: Rc::clone(&self.sender),
             owner: self.owner,
+            world_window: Rc::clone(&self.world_window),
         };
         let fut = Box::pin(closure(fib));
         ParAnd {
@@ -180,14 +189,19 @@ pub struct NextTick<'a> {
 }
 
 impl<'a> Future for NextTick<'a> {
-    type Output = ();
+    type Output = Duration;
 
     fn poll(mut self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Self::Output> {
         match self.fib.state {
             // We assume the executor will only poll it once a new frame has beginned
             CoroState::Halted => {
                 self.fib.state = CoroState::Running;
-                Poll::Ready(())
+
+                // SAFETY: None lmao
+                let dt = unsafe {
+                    (*self.fib.world_window.get().unwrap()).resource::<Time>().delta()
+                };
+                Poll::Ready(dt)
             }
             CoroState::Running => {
                 self.fib.state = CoroState::Halted;
@@ -197,6 +211,18 @@ impl<'a> Future for NextTick<'a> {
         }
     }
 }
+
+//impl<'a> NextTick<'a> {
+//    fn and_request<T: Component>(mut self, from: Entity) -> Requesting<'a, T, Self, Duration> {
+//        let fib = Fib::clone(self.fib);
+//        Requesting {
+//            coroutine: self,
+//            fib: fib,
+//            from,
+//            _phantom: PhantomData,
+//        }
+//    }
+//}
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct DurationFuture<'a> {
@@ -300,6 +326,7 @@ impl<'a> ParOr<'a> {
             state: CoroState::Running,
             sender: Rc::clone(&self.fib.sender),
             owner: self.fib.owner,
+            world_window: Rc::clone(&self.fib.world_window),
         };
         let fut = Box::pin(closure(fib));
         self.coroutines.push(fut);
@@ -351,6 +378,7 @@ impl<'a> ParAnd<'a> {
             state: CoroState::Running,
             sender: Rc::clone(&self.fib.sender),
             owner: self.fib.owner,
+            world_window: Rc::clone(&self.fib.world_window),
         };
         let fut = Box::pin(closure(fib));
         self.coroutines.push(fut);
@@ -393,3 +421,37 @@ where
         }
     }
 }
+
+//#[pin_project]
+//pub struct Requesting<'a, T, F, O> 
+//where
+//    T: Component,
+//    F: Future<Output = O> + 'static, {
+//    #[pin]
+//    coroutine: F,
+//    fib: &'a mut Fib,
+//    from: Entity,
+//    _phantom: PhantomData<&'a T>,
+//}
+//
+//impl<'a, T, F, O> Future for Requesting<'a, T, F, O>
+//where
+//    T: Component,
+//    F: Future<Output = O> + 'static,
+//{
+//    type Output = (O, bevy::prelude::Ref<'a, T>);
+//
+//    fn poll(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Self::Output> {
+//        let this = self.project();
+//        match this.coroutine.poll(_cx) {
+//            Poll::Pending => Poll::Pending,
+//            Poll::Ready(o) => {
+//                // SAFETY: It's like pretty late right now and I'm tired so idk...
+//                let component = unsafe {
+//                    (*this.fib.world_window.get().unwrap()).entity(*this.from).get_ref::<T>().unwrap()
+//                };
+//                Poll::Ready((o, component))
+//            }
+//        }
+//    }
+//}

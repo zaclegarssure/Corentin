@@ -16,6 +16,8 @@ fn setup_coroutines(mut executor: NonSendMut<Executor>) {
     executor.add(|mut fib| async move {
         let mut i = 0;
         loop {
+            let dt = fib.next_tick().await;
+            println!("Last frame lasted for {}", dt.as_secs_f32());
             fib.duration(Duration::from_secs(1)).await;
             i += 1;
             println!("This coroutine has started since {} seconds", i);
