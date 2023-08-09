@@ -39,6 +39,11 @@ pub struct Fib {
     pub(crate) owner: Option<Entity>,
 }
 
+// SAFETY: Same as Executor, the sender field is only accessed when polled,
+// which is done in a single threaded context.
+unsafe impl Send for Fib {}
+unsafe impl Sync for Fib {}
+
 impl Fib {
     /// Returns coroutine that resolve the next time the [`Executor`] is ticked (via
     /// [`run`][crate::executor::Executor::run] for instance).
@@ -75,7 +80,7 @@ impl Fib {
     /// bottom, in case multiple of them are ready to make progress at the same time.
     pub fn par_or<'a, C, F>(&'a mut self, closure: C) -> ParOr<'a>
     where
-        F: Future<Output = ()> + 'static,
+        F: Future<Output = ()> + 'static + Send + Sync,
         C: FnOnce(Fib) -> F,
     {
         let fib = Fib {
@@ -111,7 +116,7 @@ impl Fib {
     ///```
     pub fn on<'a, C, F>(&'a mut self, closure: C) -> On<'a, F>
     where
-        F: Future<Output = ()> + 'static,
+        F: Future<Output = ()> + 'static + Send + Sync,
         C: FnOnce(Fib) -> F,
     {
         let fib = Fib {
@@ -130,7 +135,7 @@ impl Fib {
     /// an owner entity as a parameter.
     pub fn on_self<'a, C, F>(&'a mut self, closure: C) -> On<'a, F>
     where
-        F: Future<Output = ()> + 'static,
+        F: Future<Output = ()> + 'static + Send + Sync,
         C: FnOnce(Fib, Entity) -> F,
     {
         let fib = Fib {
@@ -154,7 +159,7 @@ impl Fib {
     /// progress at the same time.
     pub fn par_and<'a, C, F>(&'a mut self, closure: C) -> ParAnd<'a>
     where
-        F: Future<Output = ()> + 'static,
+        F: Future<Output = ()> + 'static + Send + Sync,
         C: FnOnce(Fib) -> F,
     {
         let fib = Fib {
@@ -260,7 +265,7 @@ impl<'a, T: Component + Unpin> Future for Change<'a, T> {
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct ParOr<'a> {
     fib: &'a mut Fib,
-    coroutines: Vec<Pin<Box<(dyn Future<Output = ()> + 'static)>>>,
+    coroutines: Vec<Pin<Box<(dyn Future<Output = ()> + 'static + Send + Sync)>>>,
 }
 
 impl<'a> Future for ParOr<'a> {
@@ -277,7 +282,7 @@ impl<'a> Future for ParOr<'a> {
                 self.fib.state = CoroState::Halted;
                 // TODO: Will care about performance later, maybe find a way to inline the coroutines
                 // instead of allocating them on the heap ?
-                let temp: Vec<Pin<Box<dyn Future<Output = ()>>>> =
+                let temp: Vec<Pin<Box<dyn Future<Output = ()> + Send + Sync>>> =
                     self.coroutines.drain(..).collect();
                 self.fib
                     .sender
@@ -293,7 +298,7 @@ impl<'a> ParOr<'a> {
     /// above.
     pub fn with<C, F>(&mut self, closure: C) -> &mut Self
     where
-        F: Future<Output = ()> + 'static,
+        F: Future<Output = ()> + 'static + Send + Sync,
         C: FnOnce(Fib) -> F,
     {
         let fib = Fib {
@@ -311,7 +316,7 @@ impl<'a> ParOr<'a> {
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct ParAnd<'a> {
     fib: &'a mut Fib,
-    coroutines: Vec<Pin<Box<(dyn Future<Output = ()> + 'static)>>>,
+    coroutines: Vec<Pin<Box<(dyn Future<Output = ()> + 'static + Send + Sync)>>>,
 }
 
 impl<'a> Future for ParAnd<'a> {
@@ -328,7 +333,7 @@ impl<'a> Future for ParAnd<'a> {
                 self.fib.state = CoroState::Halted;
                 // TODO: Will care about performance later, maybe find a way to inline the coroutines
                 // instead of allocating them on the heap ?
-                let temp: Vec<Pin<Box<dyn Future<Output = ()>>>> =
+                let temp: Vec<Pin<Box<dyn Future<Output = ()> + Send + Sync>>> =
                     self.coroutines.drain(..).collect();
                 self.fib
                     .sender
@@ -344,7 +349,7 @@ impl<'a> ParAnd<'a> {
     /// above.
     pub fn with<C, F>(&mut self, closure: C) -> &mut Self
     where
-        F: Future<Output = ()> + 'static,
+        F: Future<Output = ()> + 'static + Send + Sync,
         C: FnOnce(Fib) -> F,
     {
         let fib = Fib {

@@ -6,13 +6,13 @@ use corentin::prelude::*;
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .insert_non_send_resource(Executor::new())
+        .insert_resource(Executor::new())
         .add_systems(Startup, setup_coroutines)
         .add_systems(Update, run_coroutines)
         .run();
 }
 
-fn setup_coroutines(mut executor: NonSendMut<Executor>) {
+fn setup_coroutines(mut executor: ResMut<Executor>) {
     executor.add(|mut fib| async move {
         let mut i = 0;
         loop {
@@ -24,7 +24,7 @@ fn setup_coroutines(mut executor: NonSendMut<Executor>) {
 }
 
 fn run_coroutines(world: &mut World) {
-    world.non_send_resource_scope(|w, mut exec: Mut<Executor>| {
+    world.resource_scope(|w, mut exec: Mut<Executor>| {
         exec.run(w);
     })
 }
