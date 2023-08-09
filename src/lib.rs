@@ -1,18 +1,17 @@
 //! A coroutine library for the [bevy](https://github.com/bevyengine/bevy) game engine.
 //!
 //! TODO: Show example
-pub mod executor;
 pub mod coroutine;
+pub mod executor;
 
 mod waker;
 
 pub mod prelude {
     #[doc(hidden)]
-    pub use crate::executor::Executor;
-    #[doc(hidden)]
     pub use crate::coroutine::Fib;
+    #[doc(hidden)]
+    pub use crate::executor::Executor;
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -154,14 +153,13 @@ mod tests {
 
             for i in 0..5 {
                 // Note that it works because the coroutine on the the top of the par_or,
-                // has priority over the one on the bottom, meaning its side effect will be 
+                // has priority over the one on the bottom, meaning its side effect will be
                 // seen on the last iteration.
                 executor.run(w);
                 assert_eq!(*a.borrow_mut(), i);
             }
         });
     }
-
 
     #[test]
     fn waiting_on_par_and() {

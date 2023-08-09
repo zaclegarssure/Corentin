@@ -307,7 +307,6 @@ impl<'a> ParOr<'a> {
     }
 }
 
-
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct ParAnd<'a> {
     fib: &'a mut Fib,
