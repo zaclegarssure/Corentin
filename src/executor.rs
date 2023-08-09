@@ -29,7 +29,7 @@ pub struct Executor {
     own: HashMap<Entity, Vec<CoroId>>,
 }
 
-const ERR_WRONGAWAIT: &'static str = "A coroutine yielded without notifying the executor
+const ERR_WRONGAWAIT: &str = "A coroutine yielded without notifying the executor
 the reason. That is most likely because it awaits a
 future which is not part of this library.";
 
@@ -166,7 +166,7 @@ impl Executor {
                     }
                 }
                 to_despawn.append(coro);
-                return false;
+                false
             });
 
             for c in to_despawn {
@@ -190,18 +190,16 @@ impl Executor {
                 Poll::Pending => {
                     let msg = self.receiver.replace(None).expect(ERR_WRONGAWAIT);
                     match msg {
-                        WaitingReason::WaitOnTick => self.waiting_on_tick.push_back(coro),
-                        WaitingReason::WaitOnDuration(d) => {
-                            self.waiting_on_duration.push_back((d, coro))
-                        }
-                        WaitingReason::WaitOnChange { from, type_id } => {
+                        WaitingReason::Tick => self.waiting_on_tick.push_back(coro),
+                        WaitingReason::Duration(d) => self.waiting_on_duration.push_back((d, coro)),
+                        WaitingReason::Change { from, type_id } => {
                             let component_id = world.components().get_id(type_id).unwrap();
                             self.waiting_on_change
                                 .entry((from, component_id))
                                 .or_insert_with(Vec::new)
                                 .push(coro);
                         }
-                        WaitingReason::WaitOnParOr { coroutines } => {
+                        WaitingReason::ParOr { coroutines } => {
                             let parent = coro;
                             let mut all_ids = Vec::with_capacity(coroutines.len());
                             for coroutine in coroutines {
@@ -214,7 +212,7 @@ impl Executor {
                             let prev = self.waiting_on_par_or.insert(parent, all_ids);
                             assert!(prev.is_none());
                         }
-                        WaitingReason::WaitOnParAnd { coroutines } => {
+                        WaitingReason::ParAnd { coroutines } => {
                             let parent = coro;
                             let mut all_ids = Vec::with_capacity(coroutines.len());
                             for coroutine in coroutines {
@@ -242,7 +240,7 @@ impl Executor {
                             if let Some(others) = self.waiting_on_par_and.get_mut(&parent) {
                                 let index = others.iter().position(|c| *c == coro).unwrap();
                                 others.remove(index);
-                                if others.len() == 0 {
+                                if others.is_empty() {
                                     self.ready.push_back(parent);
                                     self.waiting_on_par_and.remove(&parent);
                                 }
@@ -303,5 +301,11 @@ mod tests {
             assert_eq!(executor.waiting_on_par_or.len(), 0);
             assert_eq!(executor.coroutines.len(), 0);
         });
+    }
+}
+
+impl Default for Executor {
+    fn default() -> Self {
+        Self::new()
     }
 }
