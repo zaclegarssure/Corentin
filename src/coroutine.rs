@@ -25,11 +25,11 @@ pub(crate) enum CoroState {
 }
 
 pub(crate) enum WaitingReason {
-    WaitOnTick,
-    WaitOnDuration(Timer),
-    WaitOnChange { from: Entity, type_id: TypeId },
-    WaitOnParOr { coroutines: Vec<CoroObject> },
-    WaitOnParAnd { coroutines: Vec<CoroObject> },
+    Tick,
+    Duration(Timer),
+    Change { from: Entity, type_id: TypeId },
+    ParOr { coroutines: Vec<CoroObject> },
+    ParAnd { coroutines: Vec<CoroObject> },
 }
 
 /// A "Fiber" object, througth which a coroutine
@@ -43,13 +43,18 @@ pub struct Fib {
     pub(crate) world_window: Rc<Cell<Option<*mut World>>>,
 }
 
+// SAFETY: Same as Executor, the sender field is only accessed when polled,
+// which is done in a single threaded context.
+unsafe impl Send for Fib {}
+unsafe impl Sync for Fib {}
+
 impl Fib {
     /// Returns coroutine that resolve the next time the [`Executor`] is ticked (via
     /// [`run`][crate::executor::Executor::run] for instance). It returns the duration
     /// of the last frame (delta time).
     ///
     /// [`Executor`]: crate::executor::Executor
-    pub fn next_tick<'a>(&'a mut self) -> NextTick<'a> {
+    pub fn next_tick(&mut self) -> NextTick<'_> {
         NextTick { fib: self }
     }
 
@@ -57,7 +62,7 @@ impl Fib {
     /// is smaller than the time between two tick of the [`Executor`] it won't be compensated.
     ///
     /// [`Executor`]: crate::executor::Executor
-    pub fn duration<'a>(&'a mut self, duration: Duration) -> DurationFuture<'a> {
+    pub fn duration(&mut self, duration: Duration) -> DurationFuture<'_> {
         DurationFuture {
             fib: self,
             duration,
@@ -67,7 +72,7 @@ impl Fib {
     /// Returns a coroutine that resolve once the [`Component`] of type `T` from a particular
     /// [`Entity`] has changed. Note that if the entity or the components is removed,
     /// this coroutine is dropped.
-    pub fn change<'a, T: Component + Unpin>(&'a mut self, from: Entity) -> Change<'a, T> {
+    pub fn change<T: Component + Unpin>(&mut self, from: Entity) -> Change<'_, T> {
         Change {
             fib: self,
             from,
@@ -78,9 +83,9 @@ impl Fib {
     /// Returns a coroutine that resolve once any of the underlying coroutine finishes. Note that
     /// once this is done, all the others are dropped. The coroutines are resumed from top to
     /// bottom, in case multiple of them are ready to make progress at the same time.
-    pub fn par_or<'a, C, F>(&'a mut self, closure: C) -> ParOr<'a>
+    pub fn par_or<C, F>(&mut self, closure: C) -> ParOr<'_>
     where
-        F: Future<Output = ()> + 'static,
+        F: Future<Output = ()> + 'static + Send + Sync,
         C: FnOnce(Fib) -> F,
     {
         let fib = Fib {
@@ -115,9 +120,9 @@ impl Fib {
     ///  fib.on(sub_coro).await;
     ///}
     ///```
-    pub fn on<'a, C, F>(&'a mut self, closure: C) -> On<'a, F>
+    pub fn on<C, F>(&mut self, closure: C) -> On<'_, F>
     where
-        F: Future<Output = ()> + 'static,
+        F: Future<Output = ()> + 'static + Send + Sync,
         C: FnOnce(Fib) -> F,
     {
         let fib = Fib {
@@ -135,9 +140,9 @@ impl Fib {
 
     /// Same as [`Self::on()`] but with a coroutine that expect
     /// an owner entity as a parameter.
-    pub fn on_self<'a, C, F>(&'a mut self, closure: C) -> On<'a, F>
+    pub fn on_self<C, F>(&mut self, closure: C) -> On<'_, F>
     where
-        F: Future<Output = ()> + 'static,
+        F: Future<Output = ()> + 'static + Send + Sync,
         C: FnOnce(Fib, Entity) -> F,
     {
         let fib = Fib {
@@ -160,9 +165,9 @@ impl Fib {
     /// Returns a coroutine that resolve once all of the underlying coroutine finishes. The
     /// coroutines are resumed from top to bottom, in case multiple of them are ready to make
     /// progress at the same time.
-    pub fn par_and<'a, C, F>(&'a mut self, closure: C) -> ParAnd<'a>
+    pub fn par_and<C, F>(&mut self, closure: C) -> ParAnd<'_>
     where
-        F: Future<Output = ()> + 'static,
+        F: Future<Output = ()> + 'static + Send + Sync,
         C: FnOnce(Fib) -> F,
     {
         let fib = Fib {
@@ -205,7 +210,7 @@ impl<'a> Future for NextTick<'a> {
             }
             CoroState::Running => {
                 self.fib.state = CoroState::Halted;
-                self.fib.sender.replace(Some(WaitingReason::WaitOnTick));
+                self.fib.sender.replace(Some(WaitingReason::Tick));
                 Poll::Pending
             }
         }
@@ -244,7 +249,7 @@ impl<'a> Future for DurationFuture<'a> {
                 self.fib.state = CoroState::Halted;
                 self.fib
                     .sender
-                    .replace(Some(WaitingReason::WaitOnDuration(Timer::new(
+                    .replace(Some(WaitingReason::Duration(Timer::new(
                         self.duration,
                         TimerMode::Once,
                     ))));
@@ -273,7 +278,7 @@ impl<'a, T: Component + Unpin> Future for Change<'a, T> {
             }
             CoroState::Running => {
                 self.fib.state = CoroState::Halted;
-                self.fib.sender.replace(Some(WaitingReason::WaitOnChange {
+                self.fib.sender.replace(Some(WaitingReason::Change {
                     from: self.from,
                     type_id: TypeId::of::<T>(),
                 }));
@@ -286,7 +291,7 @@ impl<'a, T: Component + Unpin> Future for Change<'a, T> {
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct ParOr<'a> {
     fib: &'a mut Fib,
-    coroutines: Vec<Pin<Box<(dyn Future<Output = ()> + 'static)>>>,
+    coroutines: Vec<Pin<Box<(dyn Future<Output = ()> + 'static + Send + Sync)>>>,
 }
 
 impl<'a> Future for ParOr<'a> {
@@ -303,11 +308,11 @@ impl<'a> Future for ParOr<'a> {
                 self.fib.state = CoroState::Halted;
                 // TODO: Will care about performance later, maybe find a way to inline the coroutines
                 // instead of allocating them on the heap ?
-                let temp: Vec<Pin<Box<dyn Future<Output = ()>>>> =
+                let temp: Vec<Pin<Box<dyn Future<Output = ()> + Send + Sync>>> =
                     self.coroutines.drain(..).collect();
                 self.fib
                     .sender
-                    .replace(Some(WaitingReason::WaitOnParOr { coroutines: temp }));
+                    .replace(Some(WaitingReason::ParOr { coroutines: temp }));
                 Poll::Pending
             }
         }
@@ -319,7 +324,7 @@ impl<'a> ParOr<'a> {
     /// above.
     pub fn with<C, F>(&mut self, closure: C) -> &mut Self
     where
-        F: Future<Output = ()> + 'static,
+        F: Future<Output = ()> + 'static + Send + Sync,
         C: FnOnce(Fib) -> F,
     {
         let fib = Fib {
@@ -334,11 +339,10 @@ impl<'a> ParOr<'a> {
     }
 }
 
-
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct ParAnd<'a> {
     fib: &'a mut Fib,
-    coroutines: Vec<Pin<Box<(dyn Future<Output = ()> + 'static)>>>,
+    coroutines: Vec<Pin<Box<(dyn Future<Output = ()> + 'static + Send + Sync)>>>,
 }
 
 impl<'a> Future for ParAnd<'a> {
@@ -355,11 +359,11 @@ impl<'a> Future for ParAnd<'a> {
                 self.fib.state = CoroState::Halted;
                 // TODO: Will care about performance later, maybe find a way to inline the coroutines
                 // instead of allocating them on the heap ?
-                let temp: Vec<Pin<Box<dyn Future<Output = ()>>>> =
+                let temp: Vec<Pin<Box<dyn Future<Output = ()> + Send + Sync>>> =
                     self.coroutines.drain(..).collect();
                 self.fib
                     .sender
-                    .replace(Some(WaitingReason::WaitOnParAnd { coroutines: temp }));
+                    .replace(Some(WaitingReason::ParAnd { coroutines: temp }));
                 Poll::Pending
             }
         }
@@ -371,7 +375,7 @@ impl<'a> ParAnd<'a> {
     /// above.
     pub fn with<C, F>(&mut self, closure: C) -> &mut Self
     where
-        F: Future<Output = ()> + 'static,
+        F: Future<Output = ()> + 'static + Send + Sync,
         C: FnOnce(Fib) -> F,
     {
         let fib = Fib {

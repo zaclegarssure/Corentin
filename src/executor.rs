@@ -11,10 +11,11 @@ use waker::create;
 
 use crate::{coroutine, waker};
 
-pub(crate) type CoroObject = Pin<Box<dyn Future<Output = ()>>>;
+pub(crate) type CoroObject = Pin<Box<dyn Future<Output = ()> + Send + Sync>>;
 
 type CoroId = Entity;
 
+#[derive(Resource)]
 pub struct Executor {
     coroutines: HashMap<Entity, CoroObject>,
     receiver: Rc<Cell<Option<WaitingReason>>>,
@@ -30,7 +31,12 @@ pub struct Executor {
     world_window: Rc<Cell<Option<*mut World>>>,
 }
 
-const ERR_WRONGAWAIT: &'static str = "A coroutine yielded without notifying the executor
+// SAFETY: This is safe because the only !Send and !Sync field (receiver) is only accessed
+// when calling run(), which is done in a single threaded context.
+unsafe impl Send for Executor {}
+unsafe impl Sync for Executor {}
+
+const ERR_WRONGAWAIT: &str = "A coroutine yielded without notifying the executor
 the reason. That is most likely because it awaits a
 future which is not part of this library.";
 
@@ -55,7 +61,7 @@ impl Executor {
     /// Add a coroutine to the executor.
     pub fn add<C, F>(&mut self, closure: C)
     where
-        F: Future<Output = ()> + 'static,
+        F: Future<Output = ()> + 'static + Send + Sync,
         C: FnOnce(Fib) -> F,
     {
         let fib = Fib {
@@ -71,7 +77,7 @@ impl Executor {
     /// If the entity is removed, the coroutine is dropped.
     pub fn add_to_entity<C, F>(&mut self, entity: Entity, closure: C)
     where
-        F: Future<Output = ()> + 'static,
+        F: Future<Output = ()> + 'static + Send + Sync,
         C: FnOnce(Fib, Entity) -> F,
     {
         let fib = Fib {
@@ -169,7 +175,7 @@ impl Executor {
                     }
                 }
                 to_despawn.append(coro);
-                return false;
+                false
             });
 
             for c in to_despawn {
@@ -195,18 +201,16 @@ impl Executor {
                 Poll::Pending => {
                     let msg = self.receiver.replace(None).expect(ERR_WRONGAWAIT);
                     match msg {
-                        WaitingReason::WaitOnTick => self.waiting_on_tick.push_back(coro),
-                        WaitingReason::WaitOnDuration(d) => {
-                            self.waiting_on_duration.push_back((d, coro))
-                        }
-                        WaitingReason::WaitOnChange { from, type_id } => {
+                        WaitingReason::Tick => self.waiting_on_tick.push_back(coro),
+                        WaitingReason::Duration(d) => self.waiting_on_duration.push_back((d, coro)),
+                        WaitingReason::Change { from, type_id } => {
                             let component_id = world.components().get_id(type_id).unwrap();
                             self.waiting_on_change
                                 .entry((from, component_id))
                                 .or_insert_with(Vec::new)
                                 .push(coro);
                         }
-                        WaitingReason::WaitOnParOr { coroutines } => {
+                        WaitingReason::ParOr { coroutines } => {
                             let parent = coro;
                             let mut all_ids = Vec::with_capacity(coroutines.len());
                             for coroutine in coroutines {
@@ -219,7 +223,7 @@ impl Executor {
                             let prev = self.waiting_on_par_or.insert(parent, all_ids);
                             assert!(prev.is_none());
                         }
-                        WaitingReason::WaitOnParAnd { coroutines } => {
+                        WaitingReason::ParAnd { coroutines } => {
                             let parent = coro;
                             let mut all_ids = Vec::with_capacity(coroutines.len());
                             for coroutine in coroutines {
@@ -247,7 +251,7 @@ impl Executor {
                             if let Some(others) = self.waiting_on_par_and.get_mut(&parent) {
                                 let index = others.iter().position(|c| *c == coro).unwrap();
                                 others.remove(index);
-                                if others.len() == 0 {
+                                if others.is_empty() {
                                     self.ready.push_back(parent);
                                     self.waiting_on_par_and.remove(&parent);
                                 }
@@ -280,9 +284,9 @@ mod tests {
     #[test]
     fn par_or_despawn_correctly() {
         let mut world = World::new();
-        world.insert_non_send_resource(Executor::new());
+        world.insert_resource(Executor::new());
         world.insert_resource(Time::new(Instant::now()));
-        world.non_send_resource_scope(|w, mut executor: Mut<Executor>| {
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
             executor.add(move |mut fib| async move {
                 fib.par_or(|mut fib| async move {
                     loop {
@@ -310,5 +314,11 @@ mod tests {
             assert_eq!(executor.waiting_on_par_or.len(), 0);
             assert_eq!(executor.coroutines.len(), 0);
         });
+    }
+}
+
+impl Default for Executor {
+    fn default() -> Self {
+        Self::new()
     }
 }
