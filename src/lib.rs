@@ -12,6 +12,8 @@ pub mod prelude {
     pub use crate::coroutine::Fib;
     #[doc(hidden)]
     pub use crate::executor::Executor;
+
+    pub use crate::coroutine::duration::DurationFuture;
 }
 
 #[cfg(test)]

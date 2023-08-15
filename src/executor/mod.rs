@@ -10,15 +10,21 @@ use std::task::Poll;
 use waker::create;
 
 use crate::{coroutine, waker};
+use coroutine::grab::GrabReason;
+use msg_channel::{Receiver, Sender};
 
 pub(crate) type CoroObject = Pin<Box<dyn Future<Output = ()> + Send + Sync>>;
+
+pub(crate) mod msg_channel;
+
 
 type CoroId = Entity;
 
 #[derive(Resource)]
 pub struct Executor {
     coroutines: HashMap<Entity, CoroObject>,
-    receiver: Rc<Cell<Option<WaitingReason>>>,
+    yield_msg: Receiver<WaitingReason>,
+    grab_msg: Receiver<GrabReason>,
     added: VecDeque<(CoroObject, Option<Entity>)>,
     ready: VecDeque<CoroId>,
     waiting_on_tick: VecDeque<CoroId>,
@@ -44,7 +50,8 @@ impl Executor {
     pub fn new() -> Self {
         Executor {
             coroutines: HashMap::new(),
-            receiver: Rc::new(Cell::new(None)),
+            yield_msg: Receiver::new(),
+            grab_msg: Receiver::new(),
             added: VecDeque::new(),
             ready: VecDeque::new(),
             waiting_on_tick: VecDeque::new(),
@@ -65,8 +72,8 @@ impl Executor {
         C: FnOnce(Fib) -> F,
     {
         let fib = Fib {
-            state: CoroState::Running,
-            sender: Rc::clone(&self.receiver),
+            yield_sender: self.yield_msg.sender(),
+            grab_sender: self.grab_msg.sender(),
             owner: None,
             world_window: Rc::clone(&self.world_window),
         };
@@ -81,8 +88,8 @@ impl Executor {
         C: FnOnce(Fib, Entity) -> F,
     {
         let fib = Fib {
-            state: CoroState::Running,
-            sender: Rc::clone(&self.receiver),
+            yield_sender: self.yield_msg.sender(),
+            grab_sender: self.grab_msg.sender(),
             owner: Some(entity),
             world_window: Rc::clone(&self.world_window),
         };
@@ -199,11 +206,11 @@ impl Executor {
                 .poll(&mut context)
             {
                 Poll::Pending => {
-                    let msg = self.receiver.replace(None).expect(ERR_WRONGAWAIT);
+                    let msg = self.yield_msg.receive().expect(ERR_WRONGAWAIT);
                     match msg {
                         WaitingReason::Tick => self.waiting_on_tick.push_back(coro),
                         WaitingReason::Duration(d) => self.waiting_on_duration.push_back((d, coro)),
-                        WaitingReason::Change { from, component: component_id } => {
+                        WaitingReason::Changed { from, component: component_id } => {
                             self.waiting_on_change
                                 .entry((from, component_id))
                                 .or_insert_with(Vec::new)
@@ -235,10 +242,18 @@ impl Executor {
                             let prev = self.waiting_on_par_and.insert(parent, all_ids);
                             assert!(prev.is_none());
                         }
-                        WaitingReason::ChangeWith { from: _, component: _, with: _, without: _ } => todo!(),
+                        WaitingReason::ChangedWith { from: _, component: _, with: _, without: _ } => todo!(),
                         WaitingReason::Added { from: _, component: _ } => todo!(),
                         WaitingReason::AddedWith { from: _, component: _, with: _, without: _ } => todo!(),
                     };
+
+                    match self.grab_msg.receive() {
+                        Some(GrabReason::Single(reason)) => {
+                                // TODO
+                            }
+                        Some(GrabReason::Multi(reasons)) => todo!(),
+                        None => (),
+                    }
                 }
                 Poll::Ready(_) => {
                     match self.is_awaited_by.remove(&coro) {
