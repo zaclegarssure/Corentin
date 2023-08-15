@@ -19,7 +19,9 @@ pub(crate) struct Sender<T> {
 
 impl<T> Clone for Sender<T> {
     fn clone(&self) -> Self {
-        Self { channel: Rc::clone(&self.channel) }
+        Self {
+            channel: Rc::clone(&self.channel),
+        }
     }
 }
 
@@ -45,5 +47,4 @@ impl<T> Sender<T> {
     pub(crate) fn send(&self, val: T) {
         self.channel.replace(Some(val));
     }
-    
 }

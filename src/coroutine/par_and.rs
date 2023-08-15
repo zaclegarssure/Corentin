@@ -1,3 +1,5 @@
+use bevy::prelude::Entity;
+
 use crate::coroutine::{CoroState, Fib, WaitingReason};
 
 use std::future::Future;
@@ -5,6 +7,9 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
+
+use super::grab::GrabCoroutineVoid;
+use super::grab::GrabParam;
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct ParAnd<'a> {
@@ -25,6 +30,12 @@ impl<'a> ParAnd<'a> {
             state: CoroState::Running,
             _phantom: PhantomData,
         }
+    }
+
+    pub fn then_grab<'b, P: GrabParam>(self, from: Entity) -> GrabCoroutineVoid<'a, P, ParAnd<'b>> {
+        let fib = self.fib.clone();
+        let par_and = ParAnd::new(self.fib, self.coroutines);
+        GrabCoroutineVoid::new(fib, from, par_and)
     }
 }
 
@@ -61,7 +72,7 @@ impl<'a> ParAnd<'a> {
         F: Future<Output = ()> + 'static + Send + Sync,
         C: FnOnce(Fib) -> F,
     {
-        let fib = self.fib.clone(); 
+        let fib = self.fib.clone();
         let fut = Box::pin(closure(fib));
         self.coroutines.push(fut);
         self

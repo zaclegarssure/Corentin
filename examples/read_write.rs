@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use bevy::prelude::*;
-use corentin::{coroutine::grab::GrabCoroutineVoid, prelude::*};
+use corentin::prelude::*;
 
 #[derive(Component)]
 struct ExampleComponent(u32);
@@ -20,16 +20,11 @@ fn setup_access(world: &mut World) {
         let e = w.spawn(ExampleComponent(0)).id();
         exec.add_to_entity(e, move |mut fib, this| async move {
             loop {
-                let mut example = fib
-                    .grab::<&mut ExampleComponent>(this)
-                    .after_duration(Duration::from_secs(1))
+                let mut b = fib
+                    .duration(Duration::from_secs(1))
+                    .then_grab::<&mut ExampleComponent>(this)
                     .await;
-                example.0 += 1;
-                let (_dt, mut example) = fib
-                    .grab::<&mut ExampleComponent>(this)
-                    .after_tick()
-                    .await;
-                example.0 += 1;
+                b.0 += 1;
             }
         });
         exec.add(|mut fib| async move {
@@ -41,11 +36,16 @@ fn setup_access(world: &mut World) {
     })
 }
 
-fn detect_change(q: Query<(Entity, &ExampleComponent), Changed<ExampleComponent>>, mut commands: Commands) {
+fn detect_change(
+    q: Query<(Entity, &ExampleComponent), Changed<ExampleComponent>>,
+    mut commands: Commands,
+) {
     for (e, c) in &q {
         println!("Change detected, value is now {}", c.0);
         if c.0 == 5 {
-            commands.entity(e).insert(TransformBundle { ..Default::default() });
+            commands.entity(e).insert(TransformBundle {
+                ..Default::default()
+            });
         }
     }
 }

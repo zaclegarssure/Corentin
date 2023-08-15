@@ -1,13 +1,13 @@
+use pin_project::pin_project;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
-use pin_project::pin_project;
 
 #[pin_project]
 pub struct On<F>
 where
-    F: Future<Output = ()> + 'static,
+    F: Future<Output = ()> + 'static + Send + Sync,
 {
     #[pin]
     coroutine: F,
@@ -15,7 +15,8 @@ where
 
 impl<F> On<F>
 where
-    F: Future<Output = ()> + 'static {
+    F: Future<Output = ()> + 'static + Send + Sync,
+{
     pub(crate) fn new(coroutine: F) -> Self {
         On { coroutine }
     }
@@ -23,7 +24,7 @@ where
 
 impl<F> Future for On<F>
 where
-    F: Future<Output = ()> + 'static,
+    F: Future<Output = ()> + 'static + Send + Sync,
 {
     type Output = ();
 

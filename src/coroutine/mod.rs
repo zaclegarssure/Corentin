@@ -20,7 +20,6 @@ use par_and::ParAnd;
 use par_or::ParOr;
 use when::Change;
 
-use self::grab::GrabFib;
 use self::grab::GrabParam;
 use self::grab::GrabReason;
 
@@ -105,7 +104,7 @@ impl Fib {
         }
     }
 
-    pub(crate) unsafe fn world_window<'a>(&'a self) -> UnsafeWorldCell<'a> {
+    pub(crate) unsafe fn world_window(&self) -> UnsafeWorldCell<'_> {
         let a = &mut *self
             .world_window
             .get()
@@ -125,7 +124,7 @@ impl Fib {
     /// of the last frame (delta time).
     ///
     /// [`Executor`]: crate::executor::Executor
-    pub fn next_tick<'a>(&'a mut self) -> NextTick<'a> {
+    pub fn next_tick(&mut self) -> NextTick<'_> {
         NextTick::new(self.clone())
     }
 
@@ -133,7 +132,7 @@ impl Fib {
     /// is smaller than the time between two tick of the [`Executor`] it won't be compensated.
     ///
     /// [`Executor`]: crate::executor::Executor
-    pub fn duration<'cx>(&'cx mut self, duration: Duration) -> DurationFuture<'cx> {
+    pub fn duration(&mut self, duration: Duration) -> DurationFuture<'_> {
         DurationFuture::new(self.clone(), duration)
     }
 
@@ -213,11 +212,6 @@ impl Fib {
         let fib = self.clone();
         let fut = Box::pin(closure(fib));
         ParAnd::new(self.clone(), vec![fut])
-    }
-
-    /// Returns a Fib object describing what data will be required later
-    pub fn grab<'a, P: GrabParam>(&'a mut self, from: Entity) -> GrabFib<'a, P> {
-        GrabFib::new(self.clone(), from)
     }
 
     pub fn owner(&self) -> Option<Entity> {

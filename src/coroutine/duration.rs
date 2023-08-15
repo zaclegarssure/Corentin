@@ -1,5 +1,6 @@
 use crate::coroutine::{CoroState, Fib, WaitingReason};
 
+use bevy::prelude::Entity;
 use bevy::time::Time;
 use bevy::time::Timer;
 use bevy::time::TimerMode;
@@ -10,11 +11,15 @@ use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
 
+use super::grab::GrabCoroutine;
+use super::grab::GrabCoroutineVoid;
+use super::grab::GrabParam;
+
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct NextTick<'a> {
     fib: Fib,
     state: CoroState,
-    _phantom: PhantomData<&'a ()>
+    _phantom: PhantomData<&'a ()>,
 }
 
 impl<'a> NextTick<'a> {
@@ -24,6 +29,17 @@ impl<'a> NextTick<'a> {
             state: CoroState::Running,
             _phantom: PhantomData,
         }
+    }
+
+    pub fn then_grab<'b, P: GrabParam>(
+        self,
+        from: Entity,
+    ) -> GrabCoroutine<'a, P, NextTick<'b>, Duration>
+    where
+        'b: 'a,
+    {
+        let fib = self.fib.clone();
+        GrabCoroutine::new(fib, from, NextTick::new(self.fib.clone()))
     }
 }
 
@@ -69,6 +85,21 @@ impl<'a> DurationFuture<'a> {
             state: CoroState::Running,
             _phantom: PhantomData,
         }
+    }
+
+    pub fn then_grab<'b, P: GrabParam>(
+        self,
+        from: Entity,
+    ) -> GrabCoroutineVoid<'a, P, DurationFuture<'b>>
+    where
+        'b: 'a,
+    {
+        let fib = self.fib.clone();
+        GrabCoroutineVoid::new(
+            fib,
+            from,
+            DurationFuture::new(self.fib.clone(), self.duration),
+        )
     }
 }
 

@@ -200,4 +200,46 @@ mod tests {
             assert_eq!(*a.lock().unwrap(), 3);
         });
     }
+
+    #[test]
+    fn reading_components() {
+        let mut world = World::new();
+        world.insert_resource(Executor::new());
+        world.insert_resource(Time::new(Instant::now()));
+        let e = world.spawn(ExampleComponent(0)).id();
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
+            executor.add(move |mut fib| async move {
+                for i in 0..5 {
+                    let (_, example) = fib.next_tick().then_grab::<&ExampleComponent>(e).await;
+                    assert_eq!(example.0, i);
+                }
+            });
+            executor.run(w);
+            for _ in 0..5 {
+                executor.run(w);
+                w.entity_mut(e).get_mut::<ExampleComponent>().unwrap().0 += 1;
+            }
+        });
+    }
+
+    #[test]
+    fn writing_components() {
+        let mut world = World::new();
+        world.insert_resource(Executor::new());
+        world.insert_resource(Time::new(Instant::now()));
+        let e = world.spawn(ExampleComponent(0)).id();
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
+            executor.add(move |mut fib| async move {
+                for _ in 0..5 {
+                    let (_, mut example) =
+                        fib.next_tick().then_grab::<&mut ExampleComponent>(e).await;
+                    example.0 += 1;
+                }
+            });
+            for i in 0..5 {
+                executor.run(w);
+                assert_eq!(w.entity_mut(e).get::<ExampleComponent>().unwrap().0, i)
+            }
+        });
+    }
 }

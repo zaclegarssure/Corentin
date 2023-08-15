@@ -1,6 +1,6 @@
 use bevy::{ecs::component::ComponentId, prelude::*};
 use core::task::Context;
-use coroutine::{CoroState, Fib, WaitingReason};
+use coroutine::{Fib, WaitingReason};
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
@@ -11,12 +11,11 @@ use waker::create;
 
 use crate::{coroutine, waker};
 use coroutine::grab::GrabReason;
-use msg_channel::{Receiver, Sender};
+use msg_channel::Receiver;
 
 pub(crate) type CoroObject = Pin<Box<dyn Future<Output = ()> + Send + Sync>>;
 
 pub(crate) mod msg_channel;
-
 
 type CoroId = Entity;
 
@@ -210,7 +209,10 @@ impl Executor {
                     match msg {
                         WaitingReason::Tick => self.waiting_on_tick.push_back(coro),
                         WaitingReason::Duration(d) => self.waiting_on_duration.push_back((d, coro)),
-                        WaitingReason::Changed { from, component: component_id } => {
+                        WaitingReason::Changed {
+                            from,
+                            component: component_id,
+                        } => {
                             self.waiting_on_change
                                 .entry((from, component_id))
                                 .or_insert_with(Vec::new)
@@ -242,16 +244,29 @@ impl Executor {
                             let prev = self.waiting_on_par_and.insert(parent, all_ids);
                             assert!(prev.is_none());
                         }
-                        WaitingReason::ChangedWith { from: _, component: _, with: _, without: _ } => todo!(),
-                        WaitingReason::Added { from: _, component: _ } => todo!(),
-                        WaitingReason::AddedWith { from: _, component: _, with: _, without: _ } => todo!(),
+                        WaitingReason::ChangedWith {
+                            from: _,
+                            component: _,
+                            with: _,
+                            without: _,
+                        } => todo!(),
+                        WaitingReason::Added {
+                            from: _,
+                            component: _,
+                        } => todo!(),
+                        WaitingReason::AddedWith {
+                            from: _,
+                            component: _,
+                            with: _,
+                            without: _,
+                        } => todo!(),
                     };
 
                     match self.grab_msg.receive() {
-                        Some(GrabReason::Single(reason)) => {
-                                // TODO
-                            }
-                        Some(GrabReason::Multi(reasons)) => todo!(),
+                        Some(GrabReason::Single(_reason)) => {
+                            // TODO
+                        }
+                        Some(GrabReason::Multi(_reasons)) => todo!(),
                         None => (),
                     }
                 }
