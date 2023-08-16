@@ -244,22 +244,6 @@ impl Executor {
                             let prev = self.waiting_on_par_and.insert(parent, all_ids);
                             assert!(prev.is_none());
                         }
-                        WaitingReason::ChangedWith {
-                            from: _,
-                            component: _,
-                            with: _,
-                            without: _,
-                        } => todo!(),
-                        WaitingReason::Added {
-                            from: _,
-                            component: _,
-                        } => todo!(),
-                        WaitingReason::AddedWith {
-                            from: _,
-                            component: _,
-                            with: _,
-                            without: _,
-                        } => todo!(),
                     };
 
                     match self.grab_msg.receive() {

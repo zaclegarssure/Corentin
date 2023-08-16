@@ -1,4 +1,3 @@
-use std::any::TypeId;
 use std::cell::Cell;
 use std::future::Future;
 use std::rc::Rc;
@@ -20,7 +19,6 @@ use par_and::ParAnd;
 use par_or::ParOr;
 use when::Change;
 
-use self::grab::GrabParam;
 use self::grab::GrabReason;
 
 pub mod duration;
@@ -42,22 +40,6 @@ pub(crate) enum WaitingReason {
     Changed {
         from: Entity,
         component: ComponentId,
-    },
-    ChangedWith {
-        from: Entity,
-        component: ComponentId,
-        with: Vec<ComponentId>,
-        without: Vec<ComponentId>,
-    },
-    Added {
-        from: Entity,
-        component: ComponentId,
-    },
-    AddedWith {
-        from: Entity,
-        component: ComponentId,
-        with: Vec<ComponentId>,
-        without: Vec<ComponentId>,
     },
     ParOr {
         coroutines: Vec<CoroObject>,
@@ -87,19 +69,6 @@ impl Fib {
                 .get()
                 .expect("This function should have been called when a coroutine is polled");
             w.component_id::<T>()
-                .expect("Component should have been initialized in the world")
-        }
-    }
-
-    fn get_component_id(&self, tid: TypeId) -> ComponentId {
-        // SAFETY: We are in the polling phase, therefore the coroutine is the only one running.
-        unsafe {
-            let w = &mut *self
-                .world_window
-                .get()
-                .expect("This function should have been called when a coroutine is polled");
-            w.components()
-                .get_id(tid)
                 .expect("Component should have been initialized in the world")
         }
     }
