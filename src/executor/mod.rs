@@ -1,14 +1,16 @@
+use bevy::utils::{HashMap, HashSet};
 use bevy::{ecs::component::ComponentId, prelude::*};
 use core::task::Context;
 use coroutine::{Fib, WaitingReason};
 use std::cell::Cell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::Poll;
 use waker::create;
 
+use crate::coroutine::grab::GrabAccess;
 use crate::{coroutine, waker};
 use coroutine::grab::GrabReason;
 use msg_channel::Receiver;
@@ -34,6 +36,7 @@ pub struct Executor {
     is_awaited_by: HashMap<CoroId, CoroId>,
     own: HashMap<Entity, Vec<CoroId>>,
     world_window: Rc<Cell<Option<*mut World>>>,
+    accesses: HashMap<CoroId, GrabReason>,
 }
 
 // SAFETY: This is safe because the only !Send and !Sync field (receiver) is only accessed
@@ -61,6 +64,7 @@ impl Executor {
             is_awaited_by: HashMap::new(),
             own: HashMap::new(),
             world_window: Rc::new(Cell::new(None)),
+            accesses: HashMap::new(),
         }
     }
 
@@ -192,6 +196,12 @@ impl Executor {
         // Run the coroutines
         self.world_window.replace(Some(world as *mut _));
 
+        //while let Some(coro) = self.ready.pop_front() {
+        //    if !self.coroutines.contains_key(&coro) {
+        //        continue;
+        //    }
+        //}
+
         while let Some(coro) = self.ready.pop_front() {
             if !self.coroutines.contains_key(&coro) {
                 continue;
@@ -285,6 +295,50 @@ impl Executor {
         }
 
         self.world_window.replace(None);
+    }
+
+    fn execute_coro(&mut self, coro: CoroId, writes: &mut Writes, suspended: &mut VecDeque<CoroId>, cx: &mut Context) {
+        let coroutine = self.coroutines.get_mut(&coro).unwrap();
+
+        let access = self.accesses.remove(&coro);
+        if let Some(ref access) = access {
+            if writes.conflict(&access) {
+                suspended.push_back(coro);
+                return;
+            }
+        }
+        let res = coroutine.as_mut().poll(cx);
+        let waiting_reason = self.yield_msg.receive();
+        let grab_access = self.grab_msg.receive();
+
+        if let Some(ref access) = access {
+
+        }
+
+    }
+}
+
+struct Writes {
+    accesses: HashMap<Entity, HashSet<ComponentId>>,
+}
+
+impl Writes {
+    fn conflict(&self, access: &GrabReason) -> bool {
+        match access {
+            GrabReason::Single(a) => {
+                return self.check_single_conflict(a);
+            }
+            GrabReason::Multi(a) => {
+                return a.iter().any(|access| self.check_single_conflict(access))
+            }
+        }
+    }
+
+    fn check_single_conflict(&self, access: &GrabAccess) -> bool {
+        if let Some(components) = self.accesses.get(&access.from) {
+            return components.intersection(&access.write).count() != 0;
+        }
+        false
     }
 }
 
