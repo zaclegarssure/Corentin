@@ -4,27 +4,32 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
+use super::Coroutine;
+use super::Fib;
+use super::PrimitiveVoid;
+
 #[pin_project]
-pub struct On<F>
+pub struct On<'a, F>
 where
     F: Future<Output = ()> + 'static + Send + Sync,
 {
+    fib: &'a Fib,
     #[pin]
     coroutine: F,
 }
 
-impl<F> On<F>
+impl<'a, F> On<'a, F>
 where
     F: Future<Output = ()> + 'static + Send + Sync,
 {
-    pub(crate) fn new(coroutine: F) -> Self {
-        On { coroutine }
+    pub(crate) fn new(fib: &'a Fib, coroutine: F) -> Self {
+        On { fib, coroutine }
     }
 }
 
-impl<F> Future for On<F>
+impl<'a, F> Future for On<'a, F>
 where
-    F: Future<Output = ()> + 'static + Send + Sync,
+    F: Coroutine<'static>
 {
     type Output = ();
 
@@ -32,5 +37,11 @@ where
         let this = self.project();
 
         this.coroutine.poll(cx)
+    }
+}
+
+impl<'cx, F: Coroutine<'static>> PrimitiveVoid<'cx> for On<'cx, F> {
+    fn get_context(&self) -> &super::Fib {
+        self.fib
     }
 }

@@ -20,6 +20,15 @@ pub(crate) enum GrabReason {
     Multi(Vec<GrabAccess>),
 }
 
+//impl GrabReason {
+//    pub fn writes(&self) -> impl Iterator<Item = (Entity, ComponentId)> {
+//        match self {
+//            GrabReason::Single(s) => s.write.iter().map(|c| (s.from, c))
+//            GrabReason::Multi(m) => m.iter().flat_map(|s| s.write.iter().map(|c| (s.from, c)))
+//        }
+//    }
+//}
+
 /// A world access from a single [`Entity`].
 pub struct GrabAccess {
     pub(crate) from: Entity,
@@ -170,7 +179,7 @@ where
 impl<'a, P, F> Future for GrabCoroutineVoid<'a, P, F>
 where
     P: GrabParam,
-    F: Future<Output = ()> + Send + Sync + 'static,
+    F: Future<Output = ()> + Send + Sync,
 {
     type Output = P::Fetch<'a>;
 
@@ -246,7 +255,7 @@ impl<'a, P1, P2, F> Future for GrabCoroutineVoid2<'a, P1, P2, F>
 where
     P1: GrabParam,
     P2: GrabParam,
-    F: Future<Output = ()> + Send + Sync + 'static,
+    F: Future<Output = ()> + Send + Sync,
 {
     type Output = (P1::Fetch<'a>, P2::Fetch<'a>);
 
@@ -319,7 +328,7 @@ where
 impl<'a, P, F, O> Future for GrabCoroutine<'a, P, F, O>
 where
     P: GrabParam,
-    F: Future<Output = O> + Send + Sync + 'static,
+    F: Future<Output = O> + Send + Sync,
 {
     type Output = (O, P::Fetch<'a>);
 

@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use bevy::prelude::*;
-use corentin::prelude::*;
+use corentin::{prelude::*, coroutine::PrimitiveVoid};
 
 #[derive(Component)]
 struct ExampleComponent(u32);

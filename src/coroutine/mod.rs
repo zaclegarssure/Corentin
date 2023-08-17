@@ -19,6 +19,9 @@ use par_and::ParAnd;
 use par_or::ParOr;
 use when::Change;
 
+use self::grab::GrabCoroutine;
+use self::grab::GrabCoroutineVoid;
+use self::grab::GrabParam;
 use self::grab::GrabReason;
 
 pub mod duration;
@@ -51,13 +54,25 @@ pub(crate) enum WaitingReason {
 
 /// A "Fiber" object, througth which a coroutine
 /// can interact with the rest of the world.
-#[derive(Clone)]
+/// TODO: Clone should be private (otherwise bad things can be done)
 pub struct Fib {
     // Maybe replace by a real sender receiver channel at some point
     pub(crate) yield_sender: Sender<WaitingReason>,
     pub(crate) owner: Option<Entity>,
     pub(crate) world_window: Rc<Cell<Option<*mut World>>>,
     pub(crate) grab_sender: Sender<GrabReason>,
+}
+
+impl Fib {
+    /// Done like so, to avoid user code to be able to clone the Fiber (can lead to UB)
+    pub(crate) fn clone(&self) -> Self {
+        Self {
+            yield_sender: self.yield_sender.clone(),
+            owner: self.owner.clone(),
+            world_window: self.world_window.clone(),
+            grab_sender: self.grab_sender.clone(),
+        }
+    }
 }
 
 impl Fib {
@@ -94,7 +109,7 @@ impl Fib {
     ///
     /// [`Executor`]: crate::executor::Executor
     pub fn next_tick(&mut self) -> NextTick<'_> {
-        NextTick::new(self.clone())
+        NextTick::new(self)
     }
 
     /// Returns a coroutine that resolve after a certain [`Duration`]. Note that if the duration
@@ -102,14 +117,14 @@ impl Fib {
     ///
     /// [`Executor`]: crate::executor::Executor
     pub fn duration(&mut self, duration: Duration) -> DurationFuture<'_> {
-        DurationFuture::new(self.clone(), duration)
+        DurationFuture::new(self, duration)
     }
 
     /// Returns a coroutine that resolve once the [`Component`] of type `T` from a particular
     /// [`Entity`] has changed. Note that if the entity or the components is removed,
     /// this coroutine is dropped.
     pub fn change<T: Component + Unpin>(&mut self, from: Entity) -> Change<'_, T> {
-        Change::new(self.clone(), from)
+        Change::new(self, from)
     }
 
     /// Returns a coroutine that resolve once any of the underlying coroutine finishes. Note that
@@ -117,12 +132,12 @@ impl Fib {
     /// bottom, in case multiple of them are ready to make progress at the same time.
     pub fn par_or<C, F>(&mut self, closure: C) -> ParOr<'_>
     where
-        F: Future<Output = ()> + 'static + Send + Sync,
+        F: Coroutine<'static>,
         C: FnOnce(Fib) -> F,
     {
         let fib = self.clone();
         let fut = Box::pin(closure(fib));
-        ParOr::new(self.clone(), vec![fut])
+        ParOr::new(self, vec![fut])
     }
 
     /// Returns a coroutine that resolve once the underlying coroutine finishes,
@@ -146,19 +161,19 @@ impl Fib {
     ///```
     pub fn on<C, F>(&mut self, closure: C) -> On<F>
     where
-        F: Future<Output = ()> + 'static + Send + Sync,
+        F: Coroutine<'static>,
         C: FnOnce(Fib) -> F,
     {
         let fib = self.clone();
         let fut = closure(fib);
-        On::new(fut)
+        On::new(self, fut)
     }
 
     /// Same as [`Self::on()`] but with a coroutine that expect
     /// an owner entity as a parameter.
     pub fn on_self<C, F>(&mut self, closure: C) -> On<F>
     where
-        F: Future<Output = ()> + 'static + Send + Sync,
+        F: Coroutine<'static>,
         C: FnOnce(Fib, Entity) -> F,
     {
         let fib = self.clone();
@@ -167,7 +182,7 @@ impl Fib {
             self.owner
                 .expect("Cannot call on_self if the coroutine is not owned by any entity."),
         );
-        On::new(fut)
+        On::new(self, fut)
     }
 
     /// Returns a coroutine that resolve once all of the underlying coroutine finishes. The
@@ -175,15 +190,116 @@ impl Fib {
     /// progress at the same time.
     pub fn par_and<C, F>(&mut self, closure: C) -> ParAnd<'_>
     where
-        F: Future<Output = ()> + 'static + Send + Sync,
+        F: Coroutine<'static>,
         C: FnOnce(Fib) -> F,
     {
         let fib = self.clone();
         let fut = Box::pin(closure(fib));
-        ParAnd::new(self.clone(), vec![fut])
+        ParAnd::new(self, vec![fut])
     }
 
     pub fn owner(&self) -> Option<Entity> {
         self.owner
     }
 }
+
+/// Traits defined on all primitive (next_tick, par_and, ...)
+pub trait Primitive<'cx, O>: Future<Output = O> + 'cx + Send + Sync + Sized {
+    fn get_context(&self) -> &Fib;
+
+    /// Returns a set of component from an entity, once this coroutine
+    /// has finished. For instance:
+    ///```
+    ///# use corentin::prelude::*;
+    ///# use bevy::prelude::*;
+    ///#[derive(Component)]
+    ///struct Foo(u64);
+    ///#[derive(Component)]
+    ///struct Bar(u64);
+    ///
+    ///async fn coroutine(mut fib: Fib, e: Entity) {
+    ///     loop {
+    ///         let (dt, (mut foo, bar)) = fib.next_tick().then_grab::<(&mut Foo, &Bar)>(e).await;
+    ///         foo.0 += bar.0 * dt.as_secs();
+    ///     }
+    ///}
+    ///```
+    /// Note that the data is lifetime bounded to the Context, meaning it cannot outlive
+    /// accross awaiting points, for instance this will not compile
+    /// ```compile_fail
+    ///# use corentin::prelude::*;
+    ///# use bevy::prelude::*;
+    ///#[derive(Component)]
+    ///struct Foo(u64);
+    ///#[derive(Component)]
+    ///struct Bar(u64);
+    ///
+    ///async fn coroutine(mut fib: Fib, e: Entity) {
+    ///     loop {
+    ///         let (dt, (mut foo, bar)) = fib.next_tick().then_grab::<(&mut Foo, &Bar)>(e).await;
+    ///         fib.next_tick().await;
+    ///         foo.0 += bar.0 * dt.as_secs();
+    ///     }
+    ///}
+    ///```
+    fn then_grab<'cx2, P: GrabParam>(self, from: Entity) -> GrabCoroutine<'cx2, P, Self, O>
+    where
+        'cx: 'cx2,
+    {
+        let fib = self.get_context().clone();
+        GrabCoroutine::new(fib, from, self)
+    }
+}
+
+pub trait PrimitiveVoid<'cx>: Future<Output = ()> + 'cx + Send + Sync + Sized {
+    fn get_context(&self) -> &Fib;
+
+    /// Returns a set of component from an entity, once this coroutine
+    /// has finished. For instance:
+    ///```
+    ///# use corentin::prelude::*;
+    ///# use bevy::prelude::*;
+    ///# use std::time::Duration;
+    ///#[derive(Component)]
+    ///struct Foo(u64);
+    ///#[derive(Component)]
+    ///struct Bar(u64);
+    ///
+    ///async fn coroutine(mut fib: Fib, e: Entity) {
+    ///     loop {
+    ///         let (mut foo, bar) = fib.duration(Duration::from_secs(1)).then_grab::<(&mut Foo, &Bar)>(e).await;
+    ///         foo.0 += bar.0;
+    ///     }
+    ///}
+    ///```
+    /// Note that the data is lifetime bounded to the Context, meaning it cannot outlive
+    /// accross awaiting points, for instance this will not compile
+    /// ```compile_fail
+    ///# use corentin::prelude::*;
+    ///# use bevy::prelude::*;
+    ///# use std::time::Duration;
+    ///#[derive(Component)]
+    ///struct Foo(u64);
+    ///#[derive(Component)]
+    ///struct Bar(u64);
+    ///
+    ///async fn coroutine(mut fib: Fib, e: Entity) {
+    ///     loop {
+    ///         let (mut foo, bar) = fib.duration(Duration::from_secs(1)).then_grab::<(&mut Foo, &Bar)>(e).await;
+    ///         fib.next_tick().await;
+    ///         foo.0 += bar.0;
+    ///     }
+    ///}
+    ///```
+    fn then_grab<'cx2, P: GrabParam>(self, from: Entity) -> GrabCoroutineVoid<'cx2, P, Self>
+    where
+        'cx: 'cx2,
+    {
+        let fib = self.get_context().clone();
+        GrabCoroutineVoid::new(fib, from, self)
+    }
+}
+
+/// Shorthand notation
+pub trait Coroutine<'cx, O = ()>: Future<Output = O> + 'cx + Send + Sync {}
+impl<'cx, O, T> Coroutine<'cx, O> for T where T: Future<Output = O> + 'cx + Send + Sync {}

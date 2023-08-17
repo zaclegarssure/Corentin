@@ -9,11 +9,9 @@ mod world_window;
 
 pub mod prelude {
     #[doc(hidden)]
-    pub use crate::coroutine::Fib;
-    #[doc(hidden)]
     pub use crate::executor::Executor;
-
-    pub use crate::coroutine::duration::DurationFuture;
+    #[doc(hidden)]
+    pub use crate::coroutine::{Fib, Primitive, PrimitiveVoid};
 }
 
 #[cfg(test)]
@@ -28,7 +26,7 @@ mod tests {
         time::Time,
     };
 
-    use crate::prelude::*;
+    use crate::{prelude::*, coroutine::Primitive};
 
     #[derive(Component)]
     struct ExampleComponent(u32);

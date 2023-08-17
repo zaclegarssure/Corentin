@@ -1,5 +1,3 @@
-use bevy::prelude::Entity;
-
 use crate::coroutine::{CoroState, Fib, WaitingReason};
 
 use std::future::Future;
@@ -8,12 +6,11 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
-use super::grab::GrabCoroutineVoid;
-use super::grab::GrabParam;
+use super::PrimitiveVoid;
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct ParOr<'a> {
-    fib: Fib,
+    fib: &'a Fib,
     coroutines: Vec<Pin<Box<(dyn Future<Output = ()> + 'static + Send + Sync)>>>,
     state: CoroState,
     _phantom: PhantomData<&'a ()>,
@@ -21,7 +18,7 @@ pub struct ParOr<'a> {
 
 impl<'a> ParOr<'a> {
     pub(crate) fn new(
-        fib: Fib,
+        fib: &'a Fib,
         coroutines: Vec<Pin<Box<(dyn Future<Output = ()> + 'static + Send + Sync)>>>,
     ) -> Self {
         ParOr {
@@ -30,12 +27,6 @@ impl<'a> ParOr<'a> {
             state: CoroState::Running,
             _phantom: PhantomData,
         }
-    }
-
-    pub fn then_grab<'b, P: GrabParam>(self, from: Entity) -> GrabCoroutineVoid<'a, P, ParOr<'b>> {
-        let fib = self.fib.clone();
-        let par_or = ParOr::new(self.fib, self.coroutines);
-        GrabCoroutineVoid::new(fib, from, par_or)
     }
 }
 
@@ -76,5 +67,11 @@ impl<'a> ParOr<'a> {
         let fut = Box::pin(closure(fib));
         self.coroutines.push(fut);
         self
+    }
+}
+
+impl<'cx> PrimitiveVoid<'cx> for ParOr<'cx> {
+    fn get_context(&self) -> &Fib {
+        &self.fib
     }
 }

@@ -9,36 +9,22 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
-use super::grab::GrabCoroutineVoid;
-use super::grab::GrabParam;
-
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Change<'a, T: Component> {
-    fib: Fib,
+    fib: &'a Fib,
     from: Entity,
     _phantom: PhantomData<T>,
-    _phantom2: PhantomData<&'a ()>,
     state: CoroState,
 }
 
 impl<'a, T: Component + Unpin> Change<'a, T> {
-    pub(crate) fn new(fib: Fib, from: Entity) -> Self {
+    pub(crate) fn new(fib: &'a Fib, from: Entity) -> Self {
         Change {
             fib,
             from,
             _phantom: PhantomData,
-            _phantom2: PhantomData,
             state: CoroState::Running,
         }
-    }
-
-    pub fn then_grab<'b, P: GrabParam>(
-        self,
-        from: Entity,
-    ) -> GrabCoroutineVoid<'a, P, Change<'b, T>> {
-        let change = Change::new(self.fib.clone(), self.from);
-
-        GrabCoroutineVoid::new(self.fib, from, change)
     }
 }
 

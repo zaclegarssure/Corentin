@@ -1,6 +1,5 @@
 use crate::coroutine::{CoroState, Fib, WaitingReason};
 
-use bevy::prelude::Entity;
 use bevy::time::Time;
 use bevy::time::Timer;
 use bevy::time::TimerMode;
@@ -11,35 +10,23 @@ use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
 
-use super::grab::GrabCoroutine;
-use super::grab::GrabCoroutineVoid;
-use super::grab::GrabParam;
+use super::Primitive;
+use super::PrimitiveVoid;
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct NextTick<'a> {
-    fib: Fib,
+    fib: &'a Fib,
     state: CoroState,
     _phantom: PhantomData<&'a ()>,
 }
 
 impl<'a> NextTick<'a> {
-    pub(crate) fn new(fib: Fib) -> Self {
+    pub(crate) fn new(fib: &'a Fib) -> Self {
         NextTick {
             fib,
             state: CoroState::Running,
             _phantom: PhantomData,
         }
-    }
-
-    pub fn then_grab<'b, P: GrabParam>(
-        self,
-        from: Entity,
-    ) -> GrabCoroutine<'a, P, NextTick<'b>, Duration>
-    where
-        'b: 'a,
-    {
-        let fib = self.fib.clone();
-        GrabCoroutine::new(fib, from, NextTick::new(self.fib.clone()))
     }
 }
 
@@ -69,16 +56,23 @@ impl<'a> Future for NextTick<'a> {
     }
 }
 
+
+impl<'cx> Primitive<'cx, Duration> for NextTick<'cx> {
+    fn get_context(&self) -> &Fib {
+        &self.fib
+    }
+}
+
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct DurationFuture<'a> {
-    fib: Fib,
+    fib: &'a Fib,
     duration: Duration,
     state: CoroState,
     _phantom: PhantomData<&'a ()>,
 }
 
 impl<'a> DurationFuture<'a> {
-    pub(crate) fn new(fib: Fib, duration: Duration) -> Self {
+    pub(crate) fn new(fib: &'a Fib, duration: Duration) -> Self {
         DurationFuture {
             fib,
             duration,
@@ -87,20 +81,6 @@ impl<'a> DurationFuture<'a> {
         }
     }
 
-    pub fn then_grab<'b, P: GrabParam>(
-        self,
-        from: Entity,
-    ) -> GrabCoroutineVoid<'a, P, DurationFuture<'b>>
-    where
-        'b: 'a,
-    {
-        let fib = self.fib.clone();
-        GrabCoroutineVoid::new(
-            fib,
-            from,
-            DurationFuture::new(self.fib.clone(), self.duration),
-        )
-    }
 }
 
 impl<'a> Future for DurationFuture<'a> {
@@ -124,5 +104,11 @@ impl<'a> Future for DurationFuture<'a> {
                 Poll::Pending
             }
         }
+    }
+}
+
+impl<'cx> PrimitiveVoid<'cx> for DurationFuture<'cx> {
+    fn get_context(&self) -> &Fib {
+        &self.fib
     }
 }

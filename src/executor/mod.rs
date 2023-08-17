@@ -1,7 +1,10 @@
 use bevy::utils::{HashMap, HashSet};
 use bevy::{ecs::component::ComponentId, prelude::*};
+use petgraph::graph::NodeIndex;
 use core::task::Context;
 use coroutine::{Fib, WaitingReason};
+use petgraph::prelude::DiGraph;
+use petgraph::stable_graph::{DefaultIx, IndexType};
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::future::Future;
@@ -10,16 +13,20 @@ use std::rc::Rc;
 use std::task::Poll;
 use waker::create;
 
-use crate::coroutine::grab::GrabAccess;
 use crate::{coroutine, waker};
 use coroutine::grab::GrabReason;
 use msg_channel::Receiver;
 
+use self::write_table::WriteTable;
+
 pub(crate) type CoroObject = Pin<Box<dyn Future<Output = ()> + Send + Sync>>;
 
 pub(crate) mod msg_channel;
+mod write_table;
+mod dag_parent_walker;
 
 type CoroId = Entity;
+type NodeIx = NodeIndex;
 
 #[derive(Resource)]
 pub struct Executor {
@@ -297,48 +304,142 @@ impl Executor {
         self.world_window.replace(None);
     }
 
-    fn execute_coro(&mut self, coro: CoroId, writes: &mut Writes, suspended: &mut VecDeque<CoroId>, cx: &mut Context) {
-        let coroutine = self.coroutines.get_mut(&coro).unwrap();
+    //fn execute_coro(&mut self, coro: CoroId, writes: &mut Writes, suspended: &mut VecDeque<CoroId>, cx: &mut Context) {
+    //    let coroutine = self.coroutines.get_mut(&coro).unwrap();
 
-        let access = self.accesses.remove(&coro);
-        if let Some(ref access) = access {
-            if writes.conflict(&access) {
-                suspended.push_back(coro);
-                return;
+    //    let access = self.accesses.remove(&coro);
+    //    if let Some(ref access) = access {
+    //        if writes.conflict(&access) {
+    //            suspended.push_back(coro);
+    //            return;
+    //        }
+    //    }
+    //    let res = coroutine.as_mut().poll(cx);
+    //    let waiting_reason = self.yield_msg.receive();
+    //    let grab_access = self.grab_msg.receive();
+
+    //    if let Some(ref access) = access {
+
+    //    }
+
+    //}
+
+    pub fn run_executor(&mut self, world: &mut World) {
+        let mut root_coros = VecDeque::<CoroId>::new();
+
+        // Add new coroutines
+        while let Some((coroutine, owner)) = self.added.pop_front() {
+            // We just use entity as a convenient unique ID
+            // Maybe in the future we will store everything in the ECS, but without
+            // relation that does not seem like a good fit
+            let id = world.spawn_empty().id();
+            self.coroutines.insert(id, coroutine);
+            root_coros.push_back(id);
+            if let Some(owner) = owner {
+                match self.own.get_mut(&owner) {
+                    Some(owned) => owned.push(id),
+                    None => {
+                        self.own.insert(owner, vec![id]);
+                    }
+                }
             }
         }
-        let res = coroutine.as_mut().poll(cx);
-        let waiting_reason = self.yield_msg.receive();
-        let grab_access = self.grab_msg.receive();
 
-        if let Some(ref access) = access {
+        root_coros.append(&mut self.waiting_on_tick);
 
+        world.resource_scope(|w, time: Mut<Time>| {
+            // Tick all coroutines waiting on duration
+            for (t, _) in self.waiting_on_duration.iter_mut() {
+                t.tick(time.delta());
+            }
+            self.waiting_on_duration.retain(|(t, coro)| {
+                if t.just_finished() {
+                    self.ready.push_back(*coro);
+                }
+                !t.just_finished()
+            });
+
+            let mut to_despawn = vec![];
+
+            // Check all coroutines waiting on change
+            self.waiting_on_change.retain(|(e, c), coro| {
+                if let Some(e) = w.get_entity(*e) {
+                    if let Some(t) = e.get_change_ticks_by_id(*c) {
+                        // TODO: Make sure this is correct, I'm really not that confident, even though it works with a simple example
+                        if t.is_changed(w.last_change_tick(), w.change_tick()) {
+                            for c in coro {
+                                root_coros.push_back(*c);
+                            }
+                            return false;
+                        }
+                        return true;
+                    }
+                }
+                to_despawn.append(coro);
+                false
+            });
+
+            for c in to_despawn {
+                self.cancel(w, c);
+            }
+        });
+
+        let mut graph: DiGraph<(), ()> = DiGraph::new();
+        let mut write_table: WriteTable<DefaultIx> = WriteTable::new();
+
+        let root = graph.add_node(());
+        let sink = graph.add_node(());
+
+        let mut run_cx = RunContext::new();
+        let waker = create();
+        let mut context = Context::from_waker(&waker);
+        // Run the coroutines TODO: Use a safer abstraction
+        self.world_window.replace(Some(world as *mut _));
+
+        for c in root_coros {
+            let node = run_cx.graph.add_node(());
+            run_cx.graph.add_edge(run_cx.root, node, ());
+            self.run_coroutine(c, node, run_cx.sink, false, &mut run_cx);
         }
+        while let Some((coro, node, child_node)) = run_cx.delayed.pop_front() {
+            self.resume_delayed(coro, node, child_node, &mut run_cx);
+        }
+    }
 
+    fn run_coroutine<Ix: IndexType>(&self, coro: CoroId, this_node: NodeIndex<Ix>, child_node: NodeIndex<Ix>, resumed: bool, run_cx: &mut RunContext<Ix>) -> bool {
+        if let Some(accesses) = self.accesses.get(&coro) {
+            //let conflicters = run_cx.write_table.conflicts(accesses.wr);
+        }
+        todo!()
+    }
+
+    fn resume_delayed<Ix: IndexType>(&self, coro: CoroId, this_node: NodeIndex<Ix>, child_node: NodeIndex<Ix>, run_cx: &mut RunContext<Ix>) {
+        todo!()
     }
 }
 
-struct Writes {
-    accesses: HashMap<Entity, HashSet<ComponentId>>,
+struct RunContext<Ix: IndexType = DefaultIx> {
+    graph: DiGraph<(), (), Ix>,
+    root: NodeIndex<Ix>,
+    sink: NodeIndex<Ix>,
+    write_table: WriteTable<Ix>,
+    delayed: VecDeque<(CoroId, NodeIndex<Ix>, NodeIndex<Ix>)>,
+    after_delayed: HashMap<Ix, u32>,
 }
 
-impl Writes {
-    fn conflict(&self, access: &GrabReason) -> bool {
-        match access {
-            GrabReason::Single(a) => {
-                return self.check_single_conflict(a);
-            }
-            GrabReason::Multi(a) => {
-                return a.iter().any(|access| self.check_single_conflict(access))
-            }
+impl RunContext<DefaultIx> {
+    fn new() -> Self {
+        let mut graph: DiGraph<(), (), DefaultIx> = DiGraph::new();
+        let root = graph.add_node(());
+        let sink = graph.add_node(());
+        RunContext {
+            graph,
+            root,
+            sink,
+            write_table: WriteTable::new(),
+            delayed: VecDeque::new(),
+            after_delayed: HashMap::new(),
         }
-    }
-
-    fn check_single_conflict(&self, access: &GrabAccess) -> bool {
-        if let Some(components) = self.accesses.get(&access.from) {
-            return components.intersection(&access.write).count() != 0;
-        }
-        false
     }
 }
 
