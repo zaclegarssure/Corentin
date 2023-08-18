@@ -27,6 +27,6 @@ fn setup_coroutines(mut executor: ResMut<Executor>) {
 
 fn run_coroutines(world: &mut World) {
     world.resource_scope(|w, mut exec: Mut<Executor>| {
-        exec.run(w);
+        exec.tick(w);
     })
 }

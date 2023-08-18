@@ -46,13 +46,13 @@ mod tests {
                 fib.next_tick().await;
                 *b.lock().unwrap() += 1;
             });
-            executor.run(w);
+            executor.tick(w);
             assert_eq!(*a.lock().unwrap(), 1);
-            executor.run(w);
+            executor.tick(w);
             assert_eq!(*a.lock().unwrap(), 2);
-            executor.run(w);
+            executor.tick(w);
             assert_eq!(*a.lock().unwrap(), 3);
-            executor.run(w);
+            executor.tick(w);
             assert_eq!(*a.lock().unwrap(), 3);
         });
     }
@@ -75,13 +75,13 @@ mod tests {
                 fib.on(sub_coro).await;
                 *b.lock().unwrap() += 1;
             });
-            executor.run(w);
+            executor.tick(w);
             assert_eq!(*a.lock().unwrap(), 1);
-            executor.run(w);
+            executor.tick(w);
             assert_eq!(*a.lock().unwrap(), 1);
-            executor.run(w);
+            executor.tick(w);
             assert_eq!(*a.lock().unwrap(), 2);
-            executor.run(w);
+            executor.tick(w);
             assert_eq!(*a.lock().unwrap(), 2);
         });
     }
@@ -100,17 +100,17 @@ mod tests {
                 fib.change::<ExampleComponent>(e).await;
                 *b.lock().unwrap() += 1;
             });
-            executor.run(w);
+            executor.tick(w);
             assert_eq!(*a.lock().unwrap(), 0);
             w.clear_trackers();
-            executor.run(w);
+            executor.tick(w);
             assert_eq!(*a.lock().unwrap(), 0);
-            executor.run(w);
+            executor.tick(w);
             assert_eq!(*a.lock().unwrap(), 0);
             w.entity_mut(e).get_mut::<ExampleComponent>().unwrap().0 += 1;
-            executor.run(w);
+            executor.tick(w);
             assert_eq!(*a.lock().unwrap(), 1);
-            executor.run(w);
+            executor.tick(w);
             assert_eq!(*a.lock().unwrap(), 1);
         });
     }
@@ -128,7 +128,7 @@ mod tests {
             executor.add(move |_| async move {
                 external_future().await;
             });
-            executor.run(w);
+            executor.tick(w);
         });
     }
 
@@ -159,7 +159,7 @@ mod tests {
                 // Note that it works because the coroutine on the the top of the par_or,
                 // has priority over the one on the bottom, meaning its side effect will be
                 // seen on the last iteration.
-                executor.run(w);
+                executor.tick(w);
                 assert_eq!(*a.lock().unwrap(), i);
             }
         });
@@ -188,13 +188,13 @@ mod tests {
                 .await;
             });
 
-            executor.run(w);
+            executor.tick(w);
             assert_eq!(*a.lock().unwrap(), 0);
-            executor.run(w);
+            executor.tick(w);
             assert_eq!(*a.lock().unwrap(), 2);
-            executor.run(w);
+            executor.tick(w);
             assert_eq!(*a.lock().unwrap(), 3);
-            executor.run(w);
+            executor.tick(w);
             assert_eq!(*a.lock().unwrap(), 3);
         });
     }
@@ -212,9 +212,9 @@ mod tests {
                     assert_eq!(example.0, i);
                 }
             });
-            executor.run(w);
+            executor.tick(w);
             for _ in 0..5 {
-                executor.run(w);
+                executor.tick(w);
                 w.entity_mut(e).get_mut::<ExampleComponent>().unwrap().0 += 1;
             }
         });
@@ -235,7 +235,7 @@ mod tests {
                 }
             });
             for i in 0..5 {
-                executor.run(w);
+                executor.tick(w);
                 assert_eq!(w.entity_mut(e).get::<ExampleComponent>().unwrap().0, i)
             }
         });

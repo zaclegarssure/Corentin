@@ -11,7 +11,7 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .insert_resource(Executor::new())
         .add_systems(Startup, setup_access)
-        .add_systems(Update, (run_coroutines, detect_change))
+        .add_systems(Update, run_coroutines)
         .run();
 }
 
@@ -29,29 +29,16 @@ fn setup_access(world: &mut World) {
         });
         exec.add(|mut fib| async move {
             loop {
-                fib.change::<ExampleComponent>(e).await;
-                println!("Change detected");
+                let c = fib.change::<ExampleComponent>(e)
+                    .then_grab::<&ExampleComponent>(e).await;
+                println!("Change detected, value is now {}", c.0);
             }
         });
     })
 }
 
-fn detect_change(
-    q: Query<(Entity, &ExampleComponent), Changed<ExampleComponent>>,
-    mut commands: Commands,
-) {
-    for (e, c) in &q {
-        println!("Change detected, value is now {}", c.0);
-        if c.0 == 5 {
-            commands.entity(e).insert(TransformBundle {
-                ..Default::default()
-            });
-        }
-    }
-}
-
 fn run_coroutines(world: &mut World) {
     world.resource_scope(|w, mut exec: Mut<Executor>| {
-        exec.run(w);
+        exec.tick(w);
     })
 }

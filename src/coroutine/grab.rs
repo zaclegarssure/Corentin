@@ -6,7 +6,7 @@ use std::{
 };
 
 use bevy::{
-    ecs::{component::ComponentId, world::unsafe_world_cell::UnsafeEntityCell},
+    ecs::{component::ComponentId, world::unsafe_world_cell::{UnsafeEntityCell, UnsafeWorldCell}},
     prelude::{Component, Entity, Mut, Ref, World},
     utils::HashSet,
 };
@@ -15,19 +15,23 @@ use pin_project::pin_project;
 use super::Fib;
 
 /// Describe what world access will be perform by a coroutine once resumed
+/// TODO: Benchmark and probably use something like tiny set or whatnot
 pub(crate) enum GrabReason {
     Single(GrabAccess),
     Multi(Vec<GrabAccess>),
 }
 
-//impl GrabReason {
-//    pub fn writes(&self) -> impl Iterator<Item = (Entity, ComponentId)> {
-//        match self {
-//            GrabReason::Single(s) => s.write.iter().map(|c| (s.from, c))
-//            GrabReason::Multi(m) => m.iter().flat_map(|s| s.write.iter().map(|c| (s.from, c)))
-//        }
-//    }
-//}
+impl GrabReason {
+    pub fn writes(&self) -> Vec<(Entity, ComponentId)> {
+        match self {
+            GrabReason::Single(s) => s.write.iter().cloned().map(|c| (s.from, c)).collect(),
+            GrabReason::Multi(m) => m
+                .iter()
+                .flat_map(|s| s.write.iter().cloned().map(|c| (s.from, c)))
+                .collect(),
+        }
+    }
+}
 
 /// A world access from a single [`Entity`].
 pub struct GrabAccess {
@@ -197,6 +201,7 @@ where
             }
             Poll::Ready(_) => {
                 let entity = this.from;
+
                 let world = unsafe {
                     let a =
                         &mut *this.fib.world_window.get().expect(

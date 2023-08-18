@@ -9,6 +9,8 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
+use super::PrimitiveVoid;
+
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Change<'a, T: Component> {
     fib: &'a Fib,
@@ -48,6 +50,12 @@ impl<'a, T: Component + Unpin> Future for Change<'a, T> {
                 Poll::Pending
             }
         }
+    }
+}
+
+impl<'a, T: Component + Unpin> PrimitiveVoid<'a> for Change<'a, T> {
+    fn get_context(&self) -> &Fib {
+        self.fib
     }
 }
 
