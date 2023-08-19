@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use bevy::prelude::*;
-use corentin::{prelude::*, coroutine::PrimitiveVoid};
+use corentin::{coroutine::PrimitiveVoid, prelude::*};
 
 #[derive(Component)]
 struct ExampleComponent(u32);
@@ -29,8 +29,10 @@ fn setup_access(world: &mut World) {
         });
         exec.add(|mut fib| async move {
             loop {
-                let c = fib.change::<ExampleComponent>(e)
-                    .then_grab::<&ExampleComponent>(e).await;
+                let c = fib
+                    .change::<ExampleComponent>(e)
+                    .then_grab::<&ExampleComponent>(e)
+                    .await;
                 println!("Change detected, value is now {}", c.0);
             }
         });

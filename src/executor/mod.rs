@@ -172,7 +172,7 @@ impl Executor {
                     }
                 }
                 to_despawn.append(coro);
-                return false;
+                false
             });
 
             for c in to_despawn {
@@ -220,8 +220,8 @@ impl Executor {
         let accesses = self.accesses.get(&coro);
         if let Some(accesses) = accesses {
             let mut has_conflicts = false;
-            let mut conflicters = run_cx.write_table.conflicts(accesses.writes());
-            while let Some(c) = conflicters.next() {
+            let conflicters = run_cx.write_table.conflicts(accesses.writes());
+            for c in conflicters {
                 if !resumed || !run_cx.parent_table.is_parent(*c, this_node) {
                     run_cx.parent_table.add_parent(*c, this_node);
                     has_conflicts = true;
@@ -377,7 +377,8 @@ mod tests {
                         loop {
                             fib.next_tick().await;
                         }
-                    }).await;
+                    })
+                    .await;
                 })
                 .with(|mut fib| async move {
                     for _ in 0..4 {

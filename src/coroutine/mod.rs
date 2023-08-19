@@ -52,12 +52,6 @@ pub(crate) enum WaitingReason {
     },
 }
 
-impl WaitingReason {
-    pub fn can_resume_this_tick(&self) -> bool {
-        ! matches!(self, WaitingReason::Tick | WaitingReason::Duration(_))
-    }
-}
-
 /// A "Fiber" object, througth which a coroutine
 /// can interact with the rest of the world.
 /// TODO: Clone should be private (otherwise bad things can be done)
@@ -74,7 +68,7 @@ impl Fib {
     pub(crate) fn clone(&self) -> Self {
         Self {
             yield_sender: self.yield_sender.clone(),
-            owner: self.owner.clone(),
+            owner: self.owner,
             world_window: self.world_window.clone(),
             grab_sender: self.grab_sender.clone(),
         }

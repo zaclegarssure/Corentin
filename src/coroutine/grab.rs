@@ -6,7 +6,7 @@ use std::{
 };
 
 use bevy::{
-    ecs::{component::ComponentId, world::unsafe_world_cell::{UnsafeEntityCell, UnsafeWorldCell}},
+    ecs::{component::ComponentId, world::unsafe_world_cell::UnsafeEntityCell},
     prelude::{Component, Entity, Mut, Ref, World},
     utils::HashSet,
 };

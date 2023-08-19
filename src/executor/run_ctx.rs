@@ -3,8 +3,6 @@ use std::collections::VecDeque;
 use bevy::{ecs::component::ComponentId, prelude::Entity, utils::HashMap};
 use tinyset::SetUsize;
 
-use crate::coroutine::grab::GrabReason;
-
 use super::CoroId;
 
 /// Used to store all the writes currently done, and who did it
@@ -24,7 +22,7 @@ impl<T> WriteTable<T> {
     }
 
     /// Return all conflicters
-    pub(crate) fn conflicts<'a, I>(&'a self, vals: I) -> impl Iterator<Item = &'a T>
+    pub(crate) fn conflicts<I>(&self, vals: I) -> impl Iterator<Item = &'_ T>
     where
         I: IntoIterator<Item = (Entity, ComponentId)>,
     {

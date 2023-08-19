@@ -29,7 +29,7 @@ where
 
 impl<'a, F> Future for On<'a, F>
 where
-    F: Coroutine<'static>
+    F: Coroutine<'static>,
 {
     type Output = ();
 

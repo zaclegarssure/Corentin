@@ -1,5 +1,3 @@
-use bevy::prelude::Entity;
-
 use crate::coroutine::{CoroState, Fib, WaitingReason};
 
 use std::future::Future;
@@ -9,8 +7,6 @@ use std::task::Context;
 use std::task::Poll;
 
 use super::PrimitiveVoid;
-use super::grab::GrabCoroutineVoid;
-use super::grab::GrabParam;
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct ParAnd<'a> {
@@ -76,6 +72,6 @@ impl<'a> ParAnd<'a> {
 
 impl<'cx> PrimitiveVoid<'cx> for ParAnd<'cx> {
     fn get_context(&self) -> &Fib {
-        &self.fib
+        self.fib
     }
 }

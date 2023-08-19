@@ -56,10 +56,9 @@ impl<'a> Future for NextTick<'a> {
     }
 }
 
-
 impl<'cx> Primitive<'cx, Duration> for NextTick<'cx> {
     fn get_context(&self) -> &Fib {
-        &self.fib
+        self.fib
     }
 }
 
@@ -80,7 +79,6 @@ impl<'a> DurationFuture<'a> {
             _phantom: PhantomData,
         }
     }
-
 }
 
 impl<'a> Future for DurationFuture<'a> {
@@ -109,6 +107,6 @@ impl<'a> Future for DurationFuture<'a> {
 
 impl<'cx> PrimitiveVoid<'cx> for DurationFuture<'cx> {
     fn get_context(&self) -> &Fib {
-        &self.fib
+        self.fib
     }
 }

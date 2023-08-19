@@ -72,6 +72,6 @@ impl<'a> ParOr<'a> {
 
 impl<'cx> PrimitiveVoid<'cx> for ParOr<'cx> {
     fn get_context(&self) -> &Fib {
-        &self.fib
+        self.fib
     }
 }
