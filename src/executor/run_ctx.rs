@@ -82,6 +82,7 @@ pub(crate) struct RunContext {
     pub(crate) write_table: WriteTable<usize>,
     pub(crate) parent_table: ParentTable,
     pub(crate) delayed: VecDeque<SuspendedCoro>,
+    pub(crate) current_node_map: HashMap<CoroId, usize>,
 }
 
 impl RunContext {
@@ -90,6 +91,7 @@ impl RunContext {
             write_table: WriteTable::new(),
             parent_table: ParentTable::new(),
             delayed: VecDeque::new(),
+            current_node_map: HashMap::new(),
         }
     }
 

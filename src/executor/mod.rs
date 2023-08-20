@@ -31,7 +31,7 @@ pub struct Executor {
     grab_msg: Receiver<GrabReason>,
     waiting_on_tick: VecDeque<CoroId>,
     waiting_on_duration: VecDeque<(Timer, CoroId)>,
-    waiting_on_change: HashMap<(Entity, ComponentId), Vec<(CoroId, Option<usize>)>>,
+    waiting_on_change: HashMap<(Entity, ComponentId), Vec<CoroId>>,
     waiting_on_par_or: HashMap<CoroId, Vec<CoroId>>,
     waiting_on_par_and: HashMap<CoroId, Vec<CoroId>>,
     is_awaited_by: HashMap<CoroId, CoroId>,
@@ -163,7 +163,7 @@ impl Executor {
                     if let Some(t) = e.get_change_ticks_by_id(*c) {
                         // TODO: Make sure this is correct, I'm really not that confident, even though it works with a simple example
                         if t.is_changed(w.last_change_tick(), w.change_tick()) {
-                            for (c, _) in coro {
+                            for c in coro {
                                 root_coros.push_back(*c);
                             }
                             return false;
@@ -176,7 +176,7 @@ impl Executor {
             });
 
             for c in to_despawn {
-                self.cancel(c.0);
+                self.cancel(c);
             }
         });
 
@@ -194,13 +194,6 @@ impl Executor {
 
         while let Some(SuspendedCoro { coro_id, node }) = run_cx.delayed.pop_front() {
             self.run(coro_id, node, true, &mut run_cx, &mut context);
-        }
-
-        // TODO: Redesign this
-        for waiters in self.waiting_on_change.values_mut() {
-            for (_, n) in waiters {
-                n.take();
-            }
         }
     }
 
@@ -257,8 +250,8 @@ impl Executor {
             }) {
                 run_cx.write_table.insert(*w, this_node);
                 if let Some(nexts) = self.waiting_on_change.remove(w) {
-                    for (c, n) in nexts {
-                        let node = match n {
+                    for c in nexts {
+                        let node = match run_cx.current_node_map.remove(&c) {
                             Some(n) => {
                                 run_cx.parent_table.add_parent(this_node, n);
                                 n
@@ -310,7 +303,8 @@ impl Executor {
                             self.waiting_on_change
                                 .entry((from, component))
                                 .or_default()
-                                .push((coro, Some(next_node)));
+                                .push(coro);
+                            run_cx.current_node_map.insert(coro, next_node);
                         }
                     }
                     WaitingReason::ParOr { coroutines } => {
