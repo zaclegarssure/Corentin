@@ -8,9 +8,10 @@ use std::{
 use bevy::{
     ecs::{component::ComponentId, world::unsafe_world_cell::UnsafeEntityCell},
     prelude::{Component, Entity, Mut, Ref, World},
-    utils::{all_tuples, HashSet},
+    utils::all_tuples,
 };
 use pin_project::pin_project;
+use tinyset::SetUsize;
 
 use super::Fib;
 
@@ -24,11 +25,22 @@ pub(crate) enum GrabReason {
 impl GrabReason {
     pub fn writes(&self) -> Vec<(Entity, ComponentId)> {
         match self {
-            GrabReason::Single(s) => s.write.iter().cloned().map(|c| (s.from, c)).collect(),
+            GrabReason::Single(s) => s
+                .writes
+                .iter()
+                .map(|c| (s.from, ComponentId::new(c)))
+                .collect(),
             GrabReason::Multi(m) => m
                 .iter()
-                .flat_map(|s| s.write.iter().cloned().map(|c| (s.from, c)))
+                .flat_map(|s| s.writes.iter().map(|c| (s.from, ComponentId::new(c))))
                 .collect(),
+        }
+    }
+
+    pub(crate) fn is_valid(&self, world: &World) -> bool {
+        match self {
+            GrabReason::Single(a) => a.is_valid(world),
+            GrabReason::Multi(accesses) => accesses.iter().all(|a| a.is_valid(world)),
         }
     }
 }
@@ -36,8 +48,30 @@ impl GrabReason {
 /// A world access from a single [`Entity`].
 pub struct GrabAccess {
     pub(crate) from: Entity,
-    pub(crate) read: HashSet<ComponentId>,
-    pub(crate) write: HashSet<ComponentId>,
+    pub(crate) writes: SetUsize,
+    pub(crate) reads: SetUsize,
+    pub(crate) optional: SetUsize,
+}
+
+impl GrabAccess {
+    fn is_valid(&self, world: &World) -> bool {
+        if let Some(e) = world.get_entity(self.from) {
+            for c in self.writes.iter() {
+                if !e.contains_id(ComponentId::new(c)) && !self.optional.contains(c) {
+                    return false;
+                }
+            }
+            for c in self.reads.iter() {
+                if !e.contains_id(ComponentId::new(c)) && !self.optional.contains(c) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        false
+    }
 }
 
 pub trait GrabParam {
@@ -47,23 +81,30 @@ pub trait GrabParam {
 
     fn update_access(world: &World, access: &mut GrabAccess);
 
-    fn fetch(entity: UnsafeEntityCell<'_>) -> Self::Fetch<'_>;
+    /// Fetch the required data from the world.
+    /// # Safety
+    /// While the access itself check that no internal conficlts exist, the caller must ensure that
+    /// nothing will do an incompatible access at the same time (according to the regular Rust
+    /// rules).
+    unsafe fn fetch(entity: UnsafeEntityCell<'_>) -> Self::Fetch<'_>;
 }
 
 impl<T: Component> GrabParam for &T {
     type Fetch<'w> = Ref<'w, T>;
 
     fn get_access(world: &World, from: Entity) -> GrabAccess {
-        let mut read = HashSet::new();
-        read.insert(
+        let mut reads = SetUsize::new();
+        reads.insert(
             world
                 .component_id::<T>()
-                .expect("Component should have been initialized"),
+                .expect("Component should have been initialized")
+                .index(),
         );
         GrabAccess {
             from,
-            read,
-            write: HashSet::new(),
+            writes: SetUsize::new(),
+            reads,
+            optional: SetUsize::new(),
         }
     }
 
@@ -71,17 +112,14 @@ impl<T: Component> GrabParam for &T {
         let c_id = world
             .component_id::<T>()
             .expect("Component should have been initialized");
-        if access.write.contains(&c_id) {
+        if access.writes.contains(c_id.index()) {
             panic!("Conflicting access detected");
         }
-        access.read.insert(c_id);
+        access.reads.insert(c_id.index());
     }
 
-    fn fetch(entity: UnsafeEntityCell<'_>) -> Self::Fetch<'_> {
-        // SAFETY: When initialized, we make sure that no conficts exists,
-        // and when exexuted (polled) then [`Executor`] makes sure that no
-        // other coroutine access that value at the same time.
-        unsafe { entity.get_ref::<T>().unwrap() }
+    unsafe fn fetch(entity: UnsafeEntityCell<'_>) -> Self::Fetch<'_> {
+        entity.get_ref::<T>().unwrap()
     }
 }
 
@@ -89,16 +127,18 @@ impl<T: Component> GrabParam for &mut T {
     type Fetch<'w> = Mut<'w, T>;
 
     fn get_access(world: &World, from: Entity) -> GrabAccess {
-        let mut write = HashSet::new();
-        write.insert(
+        let mut writes = SetUsize::new();
+        writes.insert(
             world
                 .component_id::<T>()
-                .expect("Component should have been initialized"),
+                .expect("Component should have been initialized")
+                .index(),
         );
         GrabAccess {
             from,
-            read: HashSet::new(),
-            write,
+            writes,
+            reads: SetUsize::new(),
+            optional: SetUsize::new(),
         }
     }
 
@@ -106,17 +146,72 @@ impl<T: Component> GrabParam for &mut T {
         let c_id = world
             .component_id::<T>()
             .expect("Component should have been initialized");
-        if access.read.contains(&c_id) {
+        if access.reads.contains(c_id.index()) {
             panic!("Conflicting access detected");
         }
-        access.write.insert(c_id);
+        access.writes.insert(c_id.index());
     }
 
-    fn fetch(entity: UnsafeEntityCell<'_>) -> Self::Fetch<'_> {
-        // SAFETY: When initialized, we make sure that no conficts exists,
-        // and when exexuted (polled) then [`Executor`] makes sure that no
-        // other coroutine access that value at the same time.
-        unsafe { entity.get_mut::<T>().unwrap() }
+    unsafe fn fetch(entity: UnsafeEntityCell<'_>) -> Self::Fetch<'_> {
+        entity.get_mut::<T>().unwrap()
+    }
+}
+
+impl<T: Component> GrabParam for Option<&T> {
+    type Fetch<'w> = Option<&'w T>;
+
+    fn get_access(world: &World, from: Entity) -> GrabAccess {
+        let mut res = <&T as GrabParam>::get_access(world, from);
+        res.optional.insert(
+            world
+                .component_id::<T>()
+                .expect("Component should have been initialized")
+                .index(),
+        );
+        res
+    }
+
+    fn update_access(world: &World, access: &mut GrabAccess) {
+        <&T as GrabParam>::update_access(world, access);
+        access.optional.insert(
+            world
+                .component_id::<T>()
+                .expect("Component should have been initialized")
+                .index(),
+        );
+    }
+
+    unsafe fn fetch(entity: UnsafeEntityCell<'_>) -> Self::Fetch<'_> {
+        entity.get::<T>()
+    }
+}
+
+impl<T: Component> GrabParam for Option<&mut T> {
+    type Fetch<'w> = Option<Mut<'w, T>>;
+
+    fn get_access(world: &World, from: Entity) -> GrabAccess {
+        let mut res = <&mut T as GrabParam>::get_access(world, from);
+        res.optional.insert(
+            world
+                .component_id::<T>()
+                .expect("Component should have been initialized")
+                .index(),
+        );
+        res
+    }
+
+    fn update_access(world: &World, access: &mut GrabAccess) {
+        <&mut T as GrabParam>::update_access(world, access);
+        access.optional.insert(
+            world
+                .component_id::<T>()
+                .expect("Component should have been initialized")
+                .index(),
+        );
+    }
+
+    unsafe fn fetch(entity: UnsafeEntityCell<'_>) -> Self::Fetch<'_> {
+        entity.get_mut::<T>()
     }
 }
 
@@ -137,7 +232,7 @@ macro_rules! impl_tuple_grab {
                 $($param2::update_access(world, access));*;
             }
 
-            fn fetch(entity: UnsafeEntityCell<'_>) -> Self::Fetch<'_> {
+            unsafe fn fetch(entity: UnsafeEntityCell<'_>) -> Self::Fetch<'_> {
                 ($param1::fetch(entity), $($param2::fetch(entity)),*)
             }
 
@@ -205,15 +300,17 @@ where
             Poll::Ready(_) => {
                 let entity = this.from;
 
-                let world = unsafe {
-                    let a =
+                // Safety: The executor takes care of not executing two conflicting coroutines
+                // at the same time.
+                unsafe {
+                    let world =
                         &mut *this.fib.world_window.get().expect(
                             "This function should have been called when a coroutine is polled",
                         );
-                    a.as_unsafe_world_cell()
-                };
-                let result = P::fetch(world.get_entity(*entity).unwrap());
-                Poll::Ready(result)
+                    let world = world.as_unsafe_world_cell();
+                    let result = P::fetch(world.get_entity(*entity).unwrap());
+                    Poll::Ready(result)
+                }
             }
         }
     }
@@ -285,16 +382,16 @@ where
             Poll::Ready(_) => {
                 let entity1 = this.from1;
                 let entity2 = this.from2;
-                let world = unsafe {
-                    let a =
+                unsafe {
+                    let world =
                         &mut *this.fib.world_window.get().expect(
                             "This function should have been called when a coroutine is polled",
                         );
-                    a.as_unsafe_world_cell()
-                };
-                let result1 = P1::fetch(world.get_entity(*entity1).unwrap());
-                let result2 = P2::fetch(world.get_entity(*entity2).unwrap());
-                Poll::Ready((result1, result2))
+                    let world = world.as_unsafe_world_cell();
+                    let result1 = P1::fetch(world.get_entity(*entity1).unwrap());
+                    let result2 = P2::fetch(world.get_entity(*entity2).unwrap());
+                    Poll::Ready((result1, result2))
+                }
             }
         }
     }
@@ -354,15 +451,15 @@ where
             }
             Poll::Ready(r) => {
                 let entity = this.from;
-                let world = unsafe {
-                    let a =
+                unsafe {
+                    let world =
                         &mut *this.fib.world_window.get().expect(
                             "This function should have been called when a coroutine is polled",
                         );
-                    a.as_unsafe_world_cell()
-                };
-                let result = P::fetch(world.get_entity(*entity).unwrap());
-                Poll::Ready((r, result))
+                    let world = world.as_unsafe_world_cell();
+                    let result = P::fetch(world.get_entity(*entity).unwrap());
+                    Poll::Ready((r, result))
+                }
             }
         }
     }

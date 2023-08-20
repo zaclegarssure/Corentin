@@ -212,6 +212,14 @@ impl Executor {
 
         let accesses = self.accesses.get(&coro);
         if let Some(accesses) = accesses {
+            {
+                let world = unsafe { &mut *self.world_window.get().unwrap() };
+                if !accesses.is_valid(world) {
+                    self.cancel(coro);
+                    return;
+                }
+            }
+
             let mut has_conflicts = false;
             let conflicters = run_cx.write_table.conflicts(accesses.writes());
             for c in conflicters {
@@ -244,11 +252,13 @@ impl Executor {
             let world = unsafe { &mut *self.world_window.get().unwrap() };
             // TODO: Should probably find a better way
             for write in accesses.writes().iter().filter(|(e, cid)| {
-                let tick = world
-                    .get_entity(*e)
-                    .unwrap()
-                    .get_change_ticks_by_id(*cid)
-                    .unwrap();
+                let tick = match world.get_entity(*e).unwrap().get_change_ticks_by_id(*cid) {
+                    Some(t) => t,
+                    None => {
+                        // The access was valid so that must be an optional field
+                        return false;
+                    }
+                };
                 tick.last_changed_tick() == world.change_tick()
             }) {
                 run_cx.write_table.insert(*write, this_node);
@@ -356,12 +366,20 @@ impl Executor {
 
 #[cfg(test)]
 mod tests {
+    use crate::coroutine::Primitive;
+
     use super::Executor;
     use bevy::{
-        prelude::{Mut, World},
+        prelude::{Component, Mut, World},
         time::Time,
     };
     use std::time::Instant;
+
+    #[derive(Component)]
+    struct ExampleComponent;
+
+    #[derive(Component)]
+    struct ExampleComponentBar;
 
     #[test]
     fn par_or_despawn_correctly() {
@@ -408,6 +426,61 @@ mod tests {
             assert_eq!(executor.is_awaited_by.len(), 0);
             assert_eq!(executor.waiting_on_par_or.len(), 0);
             assert_eq!(executor.coroutines.len(), 0);
+        });
+    }
+
+    #[test]
+    fn waiting_on_change_cancel_when_components_not_present() {
+        let mut world = World::new();
+        world.insert_resource(Executor::new());
+        world.insert_resource(Time::new(Instant::now()));
+        let e = world.spawn((ExampleComponent, ExampleComponentBar)).id();
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
+            executor.add(|mut fib| async move {
+                loop {
+                    let _ex = fib.next_tick().then_grab::<&ExampleComponent>(e).await;
+                }
+            });
+            executor.add(|mut fib| async move {
+                loop {
+                    let _ex = fib.next_tick().then_grab::<&ExampleComponentBar>(e).await;
+                }
+            });
+
+            assert_eq!(executor.coroutines.len(), 2);
+            executor.tick(w);
+            assert_eq!(executor.coroutines.len(), 2);
+            w.entity_mut(e).remove::<ExampleComponent>();
+            executor.tick(w);
+            assert_eq!(executor.coroutines.len(), 1);
+            w.entity_mut(e).despawn();
+            executor.tick(w);
+            assert_eq!(executor.coroutines.len(), 0);
+        });
+    }
+
+    #[test]
+    fn waiting_on_change_dont_cancel_on_optional() {
+        let mut world = World::new();
+        world.insert_resource(Executor::new());
+        world.insert_resource(Time::new(Instant::now()));
+        let e = world.spawn(ExampleComponent).id();
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
+            executor.add(|mut fib| async move {
+                loop {
+                    let _ex = fib
+                        .next_tick()
+                        .then_grab::<Option<&ExampleComponent>>(e)
+                        .await;
+                }
+            });
+
+            assert_eq!(executor.coroutines.len(), 1);
+            executor.tick(w);
+            assert_eq!(executor.coroutines.len(), 1);
+            w.entity_mut(e).remove::<ExampleComponent>();
+            executor.tick(w);
+            assert_eq!(executor.coroutines.len(), 1);
         });
     }
 }
