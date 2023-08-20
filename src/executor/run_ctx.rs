@@ -7,7 +7,7 @@ use super::CoroId;
 
 /// Used to store all the writes currently done, and who did it
 pub(crate) struct WriteTable<T> {
-    table: HashMap<(Entity, ComponentId), T>,
+    pub(crate) table: HashMap<(Entity, ComponentId), T>,
 }
 
 impl<T> WriteTable<T> {
@@ -31,7 +31,7 @@ impl<T> WriteTable<T> {
 }
 
 pub(crate) struct ParentTable {
-    table: Vec<SetUsize>,
+    pub(crate) table: Vec<SetUsize>,
 }
 
 impl ParentTable {
@@ -95,10 +95,14 @@ impl RunContext {
         }
     }
 
-    pub(crate) fn can_execute_now(&self, node: usize, react_to: &(Entity, ComponentId)) -> bool {
+    pub(crate) fn can_execute_now(
+        &self,
+        node: usize,
+        react_to: &(Entity, ComponentId),
+    ) -> Option<usize> {
         match self.write_table.table.get(react_to) {
-            Some(writer) => !self.parent_table.is_parent(*writer, node),
-            None => false,
+            Some(writer) if !self.parent_table.is_parent(*writer, node) => Some(*writer),
+            _ => None,
         }
     }
 }

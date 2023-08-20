@@ -225,6 +225,8 @@ impl Executor {
                 run_cx
                     .delayed
                     .push_back(SuspendedCoro::new(coro, this_node));
+
+                return;
             }
         }
 
@@ -233,19 +235,16 @@ impl Executor {
         let next_access = self.grab_msg.receive();
 
         if let Some(accesses) = accesses {
-            let world = unsafe {
-                let a = &mut *self.world_window.get().unwrap();
-                a.as_unsafe_world_cell()
-            };
+            // SAFETY: No other coroutines a running right now, we have exclusive world access
+            let world = unsafe { &mut *self.world_window.get().unwrap() };
             // TODO: Should probably find a better way
-            for w in accesses.writes().iter().filter(|(e, cid)| unsafe {
+            for w in accesses.writes().iter().filter(|(e, cid)| {
                 let tick = world
                     .get_entity(*e)
                     .unwrap()
                     .get_change_ticks_by_id(*cid)
                     .unwrap();
-
-                // Check if it is correct
+                // TODO: Check if it is correct (Looks okay enough)
                 tick.is_changed(world.last_change_tick(), world.change_tick())
             }) {
                 run_cx.write_table.insert(*w, this_node);
@@ -297,14 +296,18 @@ impl Executor {
                     WaitingReason::Duration(d) => self.waiting_on_duration.push_back((d, coro)),
                     WaitingReason::Changed { from, component } => {
                         let next_node = run_cx.parent_table.add_child(this_node);
-                        if run_cx.can_execute_now(next_node, &(from, component)) {
-                            self.run(coro, next_node, false, run_cx, cx);
-                        } else {
-                            self.waiting_on_change
-                                .entry((from, component))
-                                .or_default()
-                                .push(coro);
-                            run_cx.current_node_map.insert(coro, next_node);
+                        match run_cx.can_execute_now(next_node, &(from, component)) {
+                            Some(writer) => {
+                                run_cx.parent_table.add_parent(writer, next_node);
+                                self.run(coro, next_node, false, run_cx, cx);
+                            }
+                            None => {
+                                self.waiting_on_change
+                                    .entry((from, component))
+                                    .or_default()
+                                    .push(coro);
+                                run_cx.current_node_map.insert(coro, next_node);
+                            }
                         }
                     }
                     WaitingReason::ParOr { coroutines } => {
@@ -316,12 +319,13 @@ impl Executor {
                             self.is_awaited_by.insert(id, parent);
                             all_ids.push(id);
                         }
-                        let prev = self.waiting_on_par_or.insert(parent, all_ids.clone());
+
+                        self.waiting_on_par_or.insert(parent, all_ids.clone());
+
                         for id in all_ids {
                             let node = run_cx.parent_table.add_child(this_node);
                             self.run(id, node, false, run_cx, cx);
                         }
-                        assert!(prev.is_none());
                     }
                     WaitingReason::ParAnd { coroutines } => {
                         let parent = coro;
@@ -332,12 +336,13 @@ impl Executor {
                             self.is_awaited_by.insert(id, parent);
                             all_ids.push(id);
                         }
-                        let prev = self.waiting_on_par_and.insert(parent, all_ids.clone());
+
+                        self.waiting_on_par_and.insert(parent, all_ids.clone());
+
                         for id in all_ids {
                             let node = run_cx.parent_table.add_child(this_node);
                             self.run(id, node, false, run_cx, cx);
                         }
-                        assert!(prev.is_none());
                     }
                 }
             }

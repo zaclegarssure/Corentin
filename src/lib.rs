@@ -240,4 +240,114 @@ mod tests {
             }
         });
     }
+
+    #[test]
+    fn waiting_on_internal_change() {
+        let mut world = World::new();
+        world.insert_resource(Executor::new());
+        world.insert_resource(Time::new(Instant::now()));
+        let e = world.spawn(ExampleComponent(0)).id();
+        let a = Arc::new(Mutex::new(0));
+        let b = Arc::clone(&a);
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
+            executor.add(move |mut fib| async move {
+                for _ in 0..5 {
+                    let (_, mut example) =
+                        fib.next_tick().then_grab::<&mut ExampleComponent>(e).await;
+                    example.0 += 1;
+                }
+            });
+            executor.add(|mut fib| async move {
+                loop {
+                    fib.change::<ExampleComponent>(e).await;
+                    *a.lock().unwrap() += 1;
+                }
+            });
+
+            for i in 0..5 {
+                executor.tick(w);
+                assert_eq!(*b.lock().unwrap(), i);
+                w.clear_trackers();
+            }
+        });
+    }
+
+    #[test]
+    fn multiple_write_dont_override_too_soon() {
+        let mut world = World::new();
+        world.insert_resource(Executor::new());
+        world.insert_resource(Time::new(Instant::now()));
+        let e = world.spawn(ExampleComponent(0)).id();
+        let a = Arc::new(Mutex::new(0));
+        let b = Arc::clone(&a);
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
+            executor.add(move |mut fib| async move {
+                for _ in 0..5 {
+                    let (_, mut example) =
+                        fib.next_tick().then_grab::<&mut ExampleComponent>(e).await;
+                    example.0 += 1;
+                }
+            });
+            executor.add(move |mut fib| async move {
+                for _ in 0..5 {
+                    let (_, mut example) =
+                        fib.next_tick().then_grab::<&mut ExampleComponent>(e).await;
+                    example.0 += 1;
+                }
+            });
+            executor.add(|mut fib| async move {
+                loop {
+                    fib.change::<ExampleComponent>(e).await;
+                    *a.lock().unwrap() += 1;
+                }
+            });
+
+            for i in 0..5 {
+                executor.tick(w);
+                assert_eq!(*b.lock().unwrap(), i * 2);
+                w.clear_trackers();
+            }
+        });
+    }
+
+    #[test]
+    fn waiting_on_internal_change_do_not_consume_twice_events() {
+        let mut world = World::new();
+        world.insert_resource(Executor::new());
+        world.insert_resource(Time::new(Instant::now()));
+        let e1 = world.spawn(ExampleComponent(0)).id();
+        let e2 = world.spawn(ExampleComponent(0)).id();
+        let a = Arc::new(Mutex::new(0));
+        let b = Arc::clone(&a);
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
+            executor.add(move |mut fib| async move {
+                for _ in 0..5 {
+                    let (_, mut example) =
+                        fib.next_tick().then_grab::<&mut ExampleComponent>(e1).await;
+                    example.0 += 1;
+                }
+            });
+            executor.add(move |mut fib| async move {
+                for _ in 0..5 {
+                    let (_, mut example) =
+                        fib.next_tick().then_grab::<&mut ExampleComponent>(e2).await;
+                    example.0 += 1;
+                }
+            });
+            executor.add(|mut fib| async move {
+                loop {
+                    fib.change::<ExampleComponent>(e1).await;
+                    *a.lock().unwrap() += 1;
+                    fib.change::<ExampleComponent>(e2).await;
+                    *a.lock().unwrap() += 1;
+                }
+            });
+
+            for i in 0..5 {
+                executor.tick(w);
+                assert_eq!(*b.lock().unwrap(), i * 2);
+                w.clear_trackers();
+            }
+        });
+    }
 }
