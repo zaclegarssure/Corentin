@@ -8,7 +8,7 @@ use std::{
 use bevy::{
     ecs::{component::ComponentId, world::unsafe_world_cell::UnsafeEntityCell},
     prelude::{Component, Entity, Mut, Ref, World},
-    utils::HashSet,
+    utils::{all_tuples, HashSet},
 };
 use pin_project::pin_project;
 
@@ -120,29 +120,32 @@ impl<T: Component> GrabParam for &mut T {
     }
 }
 
-// TODO: Do this with a macro for tuples up to 15
-impl<G1, G2> GrabParam for (G1, G2)
-where
-    G1: GrabParam,
-    G2: GrabParam,
-{
-    type Fetch<'w> = (G1::Fetch<'w>, G2::Fetch<'w>);
+macro_rules! impl_tuple_grab {
+    ($param1: ident, $($param2: ident),*) => {
+        impl<$param1: GrabParam, $($param2: GrabParam),+> GrabParam for ($param1, $($param2),*)
+        {
+            type Fetch<'w> = ($param1::Fetch<'w>, $($param2::Fetch<'w>),*);
 
-    fn get_access(world: &World, from: Entity) -> GrabAccess {
-        let mut access = G1::get_access(world, from);
-        G2::update_access(world, &mut access);
-        access
-    }
+            fn get_access(world: &World, from: Entity) -> GrabAccess {
+                let mut access = $param1::get_access(world, from);
+                $($param2::update_access(world, &mut access));*;
+                access
+            }
 
-    fn update_access(world: &World, access: &mut GrabAccess) {
-        G1::update_access(world, access);
-        G2::update_access(world, access);
-    }
+            fn update_access(world: &World, access: &mut GrabAccess) {
+                $param1::update_access(world, access);
+                $($param2::update_access(world, access));*;
+            }
 
-    fn fetch(entity: UnsafeEntityCell<'_>) -> Self::Fetch<'_> {
-        (G1::fetch(entity), G2::fetch(entity))
-    }
+            fn fetch(entity: UnsafeEntityCell<'_>) -> Self::Fetch<'_> {
+                ($param1::fetch(entity), $($param2::fetch(entity)),*)
+            }
+
+        }
+    };
 }
+
+all_tuples!(impl_tuple_grab, 2, 15, G);
 
 #[pin_project]
 pub struct GrabCoroutineVoid<'a, P, F>
