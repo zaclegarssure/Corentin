@@ -8,6 +8,7 @@ An experimental reactive coroutine plugin for [`Bevy`](https://github.com/bevyen
 
 ```rust
 async fn count(mut fib: Fib) {
+  let mut i = 0;
   loop {
     fib.duration(Duration::from_secs(1)).await;
     i += 1;
@@ -32,10 +33,10 @@ Most features are not implemented yet and those that are available are pretty sl
  * Waiting that a component from an entity change.
  * Spawning multiple coroutine and waiting for the first one to finish (`ParOr`).
  * Spawning multiple coroutine and waiting for all of them to finish (`ParAnd`).
-
-## What will be soon available from coroutines
  * Getting immutable access to specific components from an entity.
  * Getting mutable access to specific components from an entity.
+
+## What will be soon available from coroutines
  * Getting access to specific resources.
  * Being able to run commands.
  * "Binding" a coroutine to some components of an entity, so that those can be conveniently accessed in the entire coroutine.
