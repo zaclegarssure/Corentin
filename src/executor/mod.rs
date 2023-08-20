@@ -229,6 +229,11 @@ impl Executor {
                 return;
             }
         }
+        // To make sure we can detect changes that just happened
+        {
+            let world = unsafe { &mut *self.world_window.get().unwrap() };
+            world.increment_change_tick();
+        }
 
         let result = self.coroutines.get_mut(&coro).unwrap().as_mut().poll(cx);
         let yield_msg = self.yield_msg.receive();
@@ -238,17 +243,16 @@ impl Executor {
             // SAFETY: No other coroutines a running right now, we have exclusive world access
             let world = unsafe { &mut *self.world_window.get().unwrap() };
             // TODO: Should probably find a better way
-            for w in accesses.writes().iter().filter(|(e, cid)| {
+            for write in accesses.writes().iter().filter(|(e, cid)| {
                 let tick = world
                     .get_entity(*e)
                     .unwrap()
                     .get_change_ticks_by_id(*cid)
                     .unwrap();
-                // TODO: Check if it is correct (Looks okay enough)
-                tick.is_changed(world.last_change_tick(), world.change_tick())
+                tick.last_changed_tick() == world.change_tick()
             }) {
-                run_cx.write_table.insert(*w, this_node);
-                if let Some(nexts) = self.waiting_on_change.remove(w) {
+                run_cx.write_table.insert(*write, this_node);
+                if let Some(nexts) = self.waiting_on_change.remove(write) {
                     for c in nexts {
                         let node = match run_cx.current_node_map.remove(&c) {
                             Some(n) => {

@@ -158,7 +158,7 @@ mod tests {
             for i in 0..5 {
                 // Note that it works because the coroutine on the the top of the par_or,
                 // has priority over the one on the bottom, meaning its side effect will be
-                // seen on the last iteration.
+                // seen on the last iteration. (Okay I just kind of gave)
                 executor.tick(w);
                 assert_eq!(*a.lock().unwrap(), i);
             }
@@ -344,6 +344,88 @@ mod tests {
             });
 
             for i in 0..5 {
+                executor.tick(w);
+                assert_eq!(*b.lock().unwrap(), i * 2);
+                w.clear_trackers();
+            }
+        });
+    }
+
+    #[test]
+    fn not_writing_to_mut_component_has_no_effect() {
+        let mut world = World::new();
+        world.insert_resource(Executor::new());
+        world.insert_resource(Time::new(Instant::now()));
+        let e = world.spawn(ExampleComponent(0)).id();
+        let a = Arc::new(Mutex::new(0));
+        let b = Arc::clone(&a);
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
+            executor.add(move |mut fib| async move {
+                for _ in 0..5 {
+                    let (_, mut example) =
+                        fib.next_tick().then_grab::<&mut ExampleComponent>(e).await;
+                    example.0 += 1;
+                }
+            });
+            executor.add(move |mut fib| async move {
+                for _ in 0..5 {
+                    let (_, mut example) =
+                        fib.next_tick().then_grab::<&mut ExampleComponent>(e).await;
+                    if false {
+                        example.0 += 1;
+                    }
+                }
+            });
+            executor.add(|mut fib| async move {
+                loop {
+                    fib.change::<ExampleComponent>(e).await;
+                    *a.lock().unwrap() += 1;
+                }
+            });
+
+            for i in 0..5 {
+                executor.tick(w);
+                assert_eq!(*b.lock().unwrap(), i);
+                w.clear_trackers();
+            }
+        });
+    }
+
+    #[test]
+    fn waiting_on_internal_and_external_change_is_correct() {
+        let mut world = World::new();
+        world.insert_resource(Executor::new());
+        world.insert_resource(Time::new(Instant::now()));
+        let e = world.spawn(ExampleComponent(0)).id();
+        let a = Arc::new(Mutex::new(0));
+        let b = Arc::clone(&a);
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
+            executor.add(move |mut fib| async move {
+                for _ in 0..5 {
+                    let (_, mut example) =
+                        fib.next_tick().then_grab::<&mut ExampleComponent>(e).await;
+                    example.0 += 1;
+                }
+            });
+            executor.add(move |mut fib| async move {
+                for _ in 0..5 {
+                    let (_, mut example) =
+                        fib.next_tick().then_grab::<&mut ExampleComponent>(e).await;
+
+                    if false {
+                        example.0 += 1;
+                    }
+                }
+            });
+            executor.add(|mut fib| async move {
+                loop {
+                    fib.change::<ExampleComponent>(e).await;
+                    *a.lock().unwrap() += 1;
+                }
+            });
+
+            for i in 0..5 {
+                w.entity_mut(e).get_mut::<ExampleComponent>().unwrap().0 += 1;
                 executor.tick(w);
                 assert_eq!(*b.lock().unwrap(), i * 2);
                 w.clear_trackers();

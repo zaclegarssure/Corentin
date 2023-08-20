@@ -54,7 +54,6 @@ pub(crate) enum WaitingReason {
 
 /// A "Fiber" object, througth which a coroutine
 /// can interact with the rest of the world.
-/// TODO: Clone should be private (otherwise bad things can be done)
 pub struct Fib {
     // Maybe replace by a real sender receiver channel at some point
     pub(crate) yield_sender: Sender<WaitingReason>,
