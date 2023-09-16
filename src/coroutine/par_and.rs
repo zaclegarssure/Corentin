@@ -1,31 +1,29 @@
-use crate::coroutine::{CoroState, Fib, WaitingReason};
+use bevy::utils::synccell::SyncCell;
+
+use crate::coroutine::{CoroState, WaitingReason};
+use crate::prelude::Fib;
 
 use std::future::Future;
-use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
-use super::PrimitiveVoid;
+use super::IntoCoroutine;
+use super::{CoroObject, Coroutine, UninitCoroutine};
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct ParAnd<'a> {
     fib: &'a Fib,
-    coroutines: Vec<Pin<Box<(dyn Future<Output = ()> + 'static + Send + Sync)>>>,
+    coroutines: Vec<CoroObject>,
     state: CoroState,
-    _phantom: PhantomData<&'a ()>,
 }
 
 impl<'a> ParAnd<'a> {
-    pub(crate) fn new(
-        fib: &'a Fib,
-        coroutines: Vec<Pin<Box<(dyn Future<Output = ()> + 'static + Send + Sync)>>>,
-    ) -> Self {
+    pub(crate) fn new(fib: &'a Fib, coroutines: Vec<CoroObject>) -> Self {
         ParAnd {
             fib,
             coroutines,
             state: CoroState::Running,
-            _phantom: PhantomData,
         }
     }
 }
@@ -42,13 +40,10 @@ impl<'a> Future for ParAnd<'a> {
             }
             CoroState::Running => {
                 self.state = CoroState::Halted;
-                // TODO: Will care about performance later, maybe find a way to inline the coroutines
-                // instead of allocating them on the heap ?
-                let temp: Vec<Pin<Box<dyn Future<Output = ()> + Send + Sync>>> =
-                    self.coroutines.drain(..).collect();
+                let coroutines = std::mem::take(&mut self.coroutines);
                 self.fib
-                    .yield_sender
-                    .send(WaitingReason::ParAnd { coroutines: temp });
+                    .yield_channel
+                    .send(WaitingReason::ParAnd { coroutines });
                 Poll::Pending
             }
         }
@@ -56,22 +51,20 @@ impl<'a> Future for ParAnd<'a> {
 }
 
 impl<'a> ParAnd<'a> {
-    /// Add a new coroutine to this [`ParAnd`]. It will have a lower priority than those defined
-    /// above.
-    pub fn with<C, F>(&mut self, closure: C) -> &mut Self
+    /// Add a new coroutine to this [`ParAnd`].
+    pub fn with<C, Marker>(&mut self, coro: C) -> &mut Self
     where
-        F: Future<Output = ()> + 'static + Send + Sync,
-        C: FnOnce(Fib) -> F,
+        C: UninitCoroutine<Marker>,
     {
-        let fib = self.fib.clone();
-        let fut = Box::pin(closure(fib));
-        self.coroutines.push(fut);
+        // Safety: We are getting polled right now, therefore we have exclusive world access.
+        unsafe {
+            if let Some(c) = coro.init(
+                self.fib.meta.owner,
+                self.fib.world_window.world_cell().world_mut(),
+            ) {
+                self.coroutines.push(SyncCell::new(Box::pin(c)));
+            }
+        }
         self
-    }
-}
-
-impl<'cx> PrimitiveVoid<'cx> for ParAnd<'cx> {
-    fn get_context(&self) -> &Fib {
-        self.fib
     }
 }
