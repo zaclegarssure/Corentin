@@ -1,10 +1,4 @@
-
-
-use bevy::{
-    ecs::component::ComponentId,
-    prelude::{Entity},
-    utils::HashMap,
-};
+use bevy::{ecs::component::ComponentId, prelude::Entity, utils::HashMap};
 use tinyset::SetUsize;
 
 use super::CoroId;

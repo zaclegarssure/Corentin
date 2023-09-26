@@ -115,7 +115,8 @@ mod tests {
             fib.next_tick().await;
             ex.on_change().await;
             *b.lock().unwrap() += 1;
-        }).apply(e, &mut world);
+        })
+        .apply(e, &mut world);
 
         world.resource_scope(|w, mut executor: Mut<Executor>| {
             w.clear_trackers();
@@ -146,7 +147,8 @@ mod tests {
 
         coroutine(|| async move {
             external_future().await;
-        }).apply(world.spawn_empty().id(), &mut world);
+        })
+        .apply(world.spawn_empty().id(), &mut world);
 
         world.resource_scope(|w, mut executor: Mut<Executor>| {
             executor.tick(w);

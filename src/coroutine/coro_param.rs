@@ -169,7 +169,8 @@ impl<'a, T: Component> DerefMut for InOutGuard<'a, T> {
 impl<T: Component> W<T> {
     pub fn get(&self) -> InGuard<'_, T> {
         let value = unsafe {
-            self.context.world_window
+            self.context
+                .world_window
                 .world_cell()
                 .get_entity(self.context.owner)
                 .unwrap()
@@ -192,7 +193,11 @@ impl<T: Component> W<T> {
                 .0
                 .push_back((self.context.owner, c_id));
 
-            let value = cell.get_entity(self.context.owner).unwrap().get_mut::<T>().unwrap();
+            let value = cell
+                .get_entity(self.context.owner)
+                .unwrap()
+                .get_mut::<T>()
+                .unwrap();
             InOutGuard {
                 value,
                 _phantom: PhantomData,
@@ -232,7 +237,7 @@ impl<T: Component> CoroParam for W<T> {
 
 // TODO: Later
 //impl<T: Component> CoroParam for Option<R<T>> {
-//    
+//
 //}
 
 macro_rules! impl_coro_param {

@@ -11,16 +11,15 @@ use tinyset::SetUsize;
 
 use self::observable::ObservableId;
 
-
-pub mod duration;
 pub mod coro_param;
+pub mod duration;
 pub mod function_coroutine;
 pub mod observable;
 pub mod on;
 pub mod par_and;
 pub mod par_or;
-mod when;
 mod waker;
+mod when;
 
 /// A coroutine that can be added to an [`Entity`](bevy::prelude::Entity)
 ///
@@ -43,7 +42,6 @@ pub(crate) struct CoroWrites(pub VecDeque<(Entity, ComponentId)>);
 /// A heap allocated Coroutine
 pub(crate) type CoroObject = SyncCell<Pin<Box<dyn Coroutine>>>;
 
-
 /// Metadata of a coroutine
 ///
 /// This includes
@@ -57,7 +55,11 @@ pub struct CoroMeta {
 
 impl CoroMeta {
     pub fn new(owner: Entity) -> Self {
-        Self {  owner, this_reads: SetUsize::default(), this_writes: SetUsize::default() }
+        Self {
+            owner,
+            this_reads: SetUsize::default(),
+            this_writes: SetUsize::default(),
+        }
     }
 
     /// Check if the values captured by the coroutine still exists.
@@ -81,7 +83,6 @@ impl CoroMeta {
         true
     }
 }
-
 
 /// The result after resuming a `Coroutine`. Either it yields an intermediate value, or return the
 /// final result.
@@ -108,19 +109,14 @@ pub trait UninitCoroutine<Marker> {
     fn init(self, owner: Entity, world: &mut World) -> Option<Self::Coroutine>;
 }
 
-
 /// A [`Coroutine`] can only yield one of these messages Used by the [`Executor`] to know when to
 /// resume a coroutine.
 pub enum WaitingReason {
     Tick,
     Duration(Timer),
     Changed(ObservableId),
-    ParOr {
-        coroutines: Vec<CoroObject>,
-    },
-    ParAnd {
-        coroutines: Vec<CoroObject>,
-    },
+    ParOr { coroutines: Vec<CoroObject> },
+    ParAnd { coroutines: Vec<CoroObject> },
 }
 
 // TODO put that somewhere else

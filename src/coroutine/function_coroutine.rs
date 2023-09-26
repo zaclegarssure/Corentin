@@ -1,8 +1,7 @@
-
 use std::time::Duration;
 use std::{cell::Cell, rc::Rc};
 
-use bevy::prelude::{Entity};
+use bevy::prelude::Entity;
 use bevy::prelude::World;
 use bevy::utils::all_tuples;
 use bevy::utils::synccell::SyncCell;
@@ -150,7 +149,8 @@ impl Fib {
     {
         // Safety: We are getting polled right now, therefore we have exclusive world access.
         unsafe {
-            if let Some(c) = coro.init(self.meta.owner, self.world_window.world_cell().world_mut()) {
+            if let Some(c) = coro.init(self.meta.owner, self.world_window.world_cell().world_mut())
+            {
                 return ParOr::new(self, vec![SyncCell::new(Box::pin(c))]);
             }
         }
@@ -164,7 +164,8 @@ impl Fib {
     {
         // Safety: We are getting polled right now, therefore we have exclusive world access.
         unsafe {
-            if let Some(c) = coro.init(self.meta.owner, self.world_window.world_cell().world_mut()) {
+            if let Some(c) = coro.init(self.meta.owner, self.world_window.world_cell().world_mut())
+            {
                 return ParAnd::new(self, vec![SyncCell::new(Box::pin(c))]);
             }
         }

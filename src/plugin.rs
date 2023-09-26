@@ -1,4 +1,4 @@
-use bevy::prelude::{Plugin, Update, World, Mut};
+use bevy::prelude::{Mut, Plugin, Update, World};
 
 use crate::{coroutine::CoroWrites, prelude::Executor};
 

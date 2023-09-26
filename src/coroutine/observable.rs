@@ -4,14 +4,11 @@ use std::{
     task::{Context, Poll},
 };
 
-use bevy::{
-    ecs::component::ComponentId,
-    prelude::{Entity},
-};
+use bevy::{ecs::component::ComponentId, prelude::Entity};
 
-use crate::{coroutine::WaitingReason};
+use crate::coroutine::WaitingReason;
 
-use super::{CoroState, coro_param::ParamContext};
+use super::{coro_param::ParamContext, CoroState};
 
 /// Anything we can observe in the world will have one specific id
 #[derive(Copy, Clone)]
@@ -25,9 +22,8 @@ pub enum ObservableId {
 pub struct OnChange<'a> {
     state: CoroState,
     id: ObservableId,
-    context: &'a ParamContext
+    context: &'a ParamContext,
 }
-
 
 impl<'a> OnChange<'a> {
     pub(crate) fn new(context: &'a ParamContext, id: ObservableId) -> Self {
@@ -50,7 +46,9 @@ impl<'a> Future for OnChange<'a> {
             }
             CoroState::Running => {
                 self.state = CoroState::Halted;
-                self.context.yield_sender.send(WaitingReason::Changed(self.id));
+                self.context
+                    .yield_sender
+                    .send(WaitingReason::Changed(self.id));
                 Poll::Pending
             }
         }
