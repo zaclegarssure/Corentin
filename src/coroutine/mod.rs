@@ -19,7 +19,6 @@ pub mod on;
 pub mod par_and;
 pub mod par_or;
 mod waker;
-mod when;
 
 /// A coroutine that can be added to an [`Entity`](bevy::prelude::Entity)
 ///
@@ -31,8 +30,9 @@ pub trait Coroutine: Send + 'static {
     /// has terminate execution will panic.
     fn resume(self: Pin<&mut Self>, world: &mut World) -> CoroutineResult<WaitingReason, ()>;
 
-    /// Return the metadata of this coroutine, including - ComponentAccess
-    fn meta(&self) -> &CoroMeta;
+    /// Return true, if this coroutine is still valid. If it is not, it should be despawned. Should
+    /// be called before [`resume`], to avoid any panic.
+    fn is_valid(self: Pin<&mut Self>, world: &World) -> bool;
 }
 
 /// A shared list of modified values (observable), to easily notify the apropriate observers.
@@ -60,27 +60,6 @@ impl CoroMeta {
             this_reads: SetUsize::default(),
             this_writes: SetUsize::default(),
         }
-    }
-
-    /// Check if the values captured by the coroutine still exists.
-    pub(crate) fn is_valid(&self, world: &World) -> bool {
-        if !world.entities().contains(self.owner) {
-            return false;
-        }
-
-        let e = world.entity(self.owner);
-        for r in self.this_reads.iter() {
-            if !e.contains_id(ComponentId::new(r)) {
-                return false;
-            }
-        }
-        for w in self.this_writes.iter() {
-            if !e.contains_id(ComponentId::new(w)) {
-                return false;
-            }
-        }
-
-        true
     }
 }
 

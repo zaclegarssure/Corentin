@@ -64,8 +64,9 @@ where
         }
     }
 
-    fn meta(&self) -> &CoroMeta {
-        &self.meta
+    fn is_valid(self: Pin<&mut Self>, world: &World) -> bool {
+        //TODO validate the window as well
+        F::Params::is_valid(self.meta.owner, world)
     }
 }
 

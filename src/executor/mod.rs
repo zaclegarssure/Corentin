@@ -22,7 +22,6 @@ pub struct Executor {
     waiting_on_par_or: HashMap<CoroId, Vec<CoroId>>,
     waiting_on_par_and: HashMap<CoroId, Vec<CoroId>>,
     is_awaited_by: HashMap<CoroId, CoroId>,
-    own: HashMap<Entity, Vec<CoroId>>,
     next_id: CoroId,
 }
 
@@ -47,7 +46,6 @@ impl Executor {
             waiting_on_par_or: HashMap::new(),
             waiting_on_par_and: HashMap::new(),
             is_awaited_by: HashMap::new(),
-            own: HashMap::new(),
             next_id: 0,
         }
     }
@@ -60,12 +58,10 @@ impl Executor {
     }
 
     /// Add a coroutine to the executor.
-    pub fn add(&mut self, mut coroutine: CoroObject) {
+    pub fn add(&mut self, coroutine: CoroObject) {
         let id = self.next_id();
-        let owner = coroutine.get().meta().owner;
         self.coroutines.insert(id, coroutine);
         self.waiting_on_tick.push_back(id);
-        self.own.entry(owner).or_default().push(id);
     }
 
     /// Drop a coroutine from the executor.
@@ -160,8 +156,7 @@ impl Executor {
         }
 
         let coro = self.coroutines.get_mut(&coro_id).unwrap().get();
-        let meta = coro.meta().clone();
-        if !meta.is_valid(world) {
+        if !coro.as_mut().is_valid(world) {
             self.cancel(coro_id);
             return;
         }

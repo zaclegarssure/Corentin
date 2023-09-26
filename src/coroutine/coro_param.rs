@@ -25,6 +25,9 @@ pub trait CoroParam: Sized + Send + 'static {
     ///
     /// Note: `world_window` is not yet open at that point, `world` should be used instead.
     fn init(context: ParamContext, world: &mut World, meta: &mut CoroMeta) -> Option<Self>;
+
+    /// Returns true if the parameter is still valid.
+    fn is_valid(owner: Entity, world: &World) -> bool;
 }
 
 /// A shared ref to a [`World`], it is "open" (meaning it points to a valid world) when the
@@ -95,6 +98,13 @@ impl<T: Component> CoroParam for R<T> {
             context,
             _phantom: PhantomData,
         })
+    }
+
+    fn is_valid(owner: Entity, world: &World) -> bool {
+        match world.get_entity(owner) {
+            Some(e) => e.contains::<T>(),
+            _ => false,
+        }
     }
 }
 
@@ -233,6 +243,13 @@ impl<T: Component> CoroParam for W<T> {
             context,
         })
     }
+
+    fn is_valid(owner: Entity, world: &World) -> bool {
+        match world.get_entity(owner) {
+            Some(e) => e.contains::<T>(),
+            _ => false,
+        }
+    }
 }
 
 // TODO: Later
@@ -249,6 +266,10 @@ macro_rules! impl_coro_param {
 
                 Some(($($param,)*))
 
+            }
+
+            fn is_valid(owner: Entity, world: &World) -> bool {
+                true $(&& $param::is_valid(owner, world))*
             }
         }
 
