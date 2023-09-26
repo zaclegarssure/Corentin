@@ -1,16 +1,15 @@
 use std::{
     future::Future,
-    marker::PhantomData,
     pin::Pin,
     task::{Context, Poll},
 };
 
 use bevy::{
     ecs::component::ComponentId,
-    prelude::{Component, Entity, Mut, World},
+    prelude::{Entity},
 };
 
-use crate::{coroutine::WaitingReason, prelude::Fib, executor::msg_channel::Sender};
+use crate::{coroutine::WaitingReason};
 
 use super::{CoroState, coro_param::ParamContext};
 

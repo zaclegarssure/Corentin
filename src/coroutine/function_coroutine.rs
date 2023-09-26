@@ -1,8 +1,8 @@
-use std::marker::PhantomData;
+
 use std::time::Duration;
 use std::{cell::Cell, rc::Rc};
 
-use bevy::prelude::{Entity, Component};
+use bevy::prelude::{Entity};
 use bevy::prelude::World;
 use bevy::utils::all_tuples;
 use bevy::utils::synccell::SyncCell;

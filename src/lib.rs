@@ -6,7 +6,6 @@ pub mod executor;
 
 mod commands;
 mod plugin;
-mod waker;
 mod world_window;
 
 pub mod prelude {

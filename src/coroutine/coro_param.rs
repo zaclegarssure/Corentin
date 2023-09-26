@@ -36,7 +36,7 @@ pub struct WorldWindow(pub(crate) Rc<Cell<*mut World>>);
 unsafe impl Send for WorldWindow {}
 
 impl WorldWindow {
-    /// #Safety
+    /// # Safety
     /// The caller must ensure that the pointer points to a valid value. (the window should be
     /// "open").
     pub unsafe fn world_cell(&self) -> UnsafeWorldCell<'_> {
@@ -45,7 +45,7 @@ impl WorldWindow {
 
     /// Return the appropriate ComponentId, and initialize it if not present in the world
     ///
-    /// #Safety
+    /// # Safety
     /// The caller must ensure that the pointer points to a valid value. (the window should be
     /// "open"). And that it is called with exclusive world.
     pub unsafe fn component_id<T: Component>(&self) -> ComponentId {
@@ -113,7 +113,7 @@ impl<'a, T: Component> Deref for InGuard<'a, T> {
 }
 
 impl<T: Component> R<T> {
-    pub fn get<'a>(&'a self) -> InGuard<'a, T> {
+    pub fn get(&self) -> InGuard<'_, T> {
         unsafe {
             InGuard {
                 value: self
@@ -167,7 +167,7 @@ impl<'a, T: Component> DerefMut for InOutGuard<'a, T> {
 }
 
 impl<T: Component> W<T> {
-    pub fn get<'a>(&'a self) -> InGuard<'a, T> {
+    pub fn get(&self) -> InGuard<'_, T> {
         let value = unsafe {
             self.context.world_window
                 .world_cell()
@@ -183,7 +183,7 @@ impl<T: Component> W<T> {
         }
     }
 
-    pub fn get_mut<'a>(&'a mut self) -> InOutGuard<'a, T> {
+    pub fn get_mut(&mut self) -> InOutGuard<'_, T> {
         unsafe {
             let cell = self.context.world_window.world_cell();
             let c_id = cell.components().component_id::<T>().unwrap();
