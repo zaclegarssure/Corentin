@@ -7,28 +7,45 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
-use super::function_coroutine::Fib;
+use super::coro_param::ParamContext;
 use super::CoroObject;
 use super::UninitCoroutine;
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct ParOr<'a> {
-    fib: &'a Fib,
+pub struct ParOr {
+    context: ParamContext,
     coroutines: Vec<CoroObject>,
     state: CoroState,
 }
 
-impl<'a> ParOr<'a> {
-    pub(crate) fn new(fib: &'a Fib, coroutines: Vec<CoroObject>) -> Self {
+impl ParOr {
+    pub(crate) fn new(context: ParamContext) -> Self {
         ParOr {
-            fib,
-            coroutines,
+            context,
+            coroutines: vec![],
             state: CoroState::Running,
         }
     }
+
+    /// Add a new coroutine to this [`ParOr`].
+    pub fn with<C, Marker>(mut self, coro: C) -> Self
+    where
+        C: UninitCoroutine<Marker>,
+    {
+        // Safety: We are getting polled right now, therefore we have exclusive world access.
+        unsafe {
+            if let Some(c) = coro.init(
+                self.context.owner,
+                self.context.world_window.world_cell().world_mut(),
+            ) {
+                self.coroutines.push(SyncCell::new(Box::pin(c)));
+            }
+        }
+        self
+    }
 }
 
-impl<'a> Future for ParOr<'a> {
+impl Future for ParOr {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Self::Output> {
@@ -41,31 +58,11 @@ impl<'a> Future for ParOr<'a> {
             CoroState::Running => {
                 self.state = CoroState::Halted;
                 let coroutines = std::mem::take(&mut self.coroutines);
-                self.fib
-                    .context
+                self.context
                     .yield_channel
                     .send(WaitingReason::ParOr { coroutines });
                 Poll::Pending
             }
         }
-    }
-}
-
-impl<'a> ParOr<'a> {
-    /// Add a new coroutine to this [`ParOr`].
-    pub fn with<C, Marker: 'static>(&mut self, coro: C) -> &mut Self
-    where
-        C: UninitCoroutine<Marker>,
-    {
-        // Safety: We are getting polled right now, therefore we have exclusive world access.
-        unsafe {
-            if let Some(c) = coro.init(
-                self.fib.context.owner,
-                self.fib.context.world_window.world_cell().world_mut(),
-            ) {
-                self.coroutines.push(SyncCell::new(Box::pin(c)));
-            }
-        }
-        self
     }
 }

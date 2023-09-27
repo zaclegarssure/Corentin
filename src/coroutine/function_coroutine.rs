@@ -3,7 +3,6 @@ use std::time::Duration;
 use bevy::prelude::Entity;
 use bevy::prelude::World;
 use bevy::utils::all_tuples;
-use bevy::utils::synccell::SyncCell;
 use pin_project::pin_project;
 use std::future::Future;
 use std::pin::Pin;
@@ -60,7 +59,6 @@ where
     }
 
     fn is_valid(self: Pin<&mut Self>, world: &World) -> bool {
-        //TODO validate the Fib as well
         F::Params::is_valid(self.owner, world)
     }
 
@@ -73,7 +71,7 @@ pub trait CoroutineParamFunction<Marker>: Send + 'static {
     type Future: Future<Output = ()> + Send + 'static;
     type Params: CoroParam;
 
-    fn init(self, fib: Fib, params: Self::Params) -> Self::Future;
+    fn init(self, params: Self::Params) -> Self::Future;
 }
 
 impl<Marker: 'static, F> UninitCoroutine<Marker> for F
@@ -95,10 +93,9 @@ where
         let mut access = CoroAccess::default();
 
         let params = F::Params::init(context.clone(), world, &mut access)?;
-        let fib = Fib { context };
 
         Some(FunctionCoroutine {
-            future: self.init(fib, params),
+            future: self.init(params),
             yield_channel,
             world_window,
             owner,
@@ -107,14 +104,11 @@ where
     }
 }
 
-/// The `Fib` is the first param of a coroutine, all yielding is done througth it.
+/// The fib is a parameter througth which a coroutine can wait on various elementary construct.
+/// such as waiting until the next tick, waiting on multiple sub-coroutines.
 pub struct Fib {
     pub(crate) context: ParamContext,
 }
-
-// Safety: No idea....
-unsafe impl Send for Fib {}
-unsafe impl Sync for Fib {}
 
 impl Fib {
     /// Returns coroutine that resolve the next time the [`Executor`] is ticked (via
@@ -122,108 +116,48 @@ impl Fib {
     /// of the last frame (delta time).
     ///
     /// [`Executor`]: crate::executor::Executor
-    pub fn next_tick(&self) -> NextTick<'_> {
-        NextTick::new(self)
+    pub fn next_tick(&self) -> NextTick {
+        NextTick::new(self.context.clone())
     }
 
     ///// Returns a coroutine that resolve after a certain [`Duration`]. Note that if the duration
     ///// is smaller than the time between two tick of the [`Executor`] it won't be compensated.
     /////
     ///// [`Executor`]: crate::executor::Executor
-    pub fn duration(&self, duration: Duration) -> DurationFuture<'_> {
-        DurationFuture::new(self, duration)
+    pub fn duration(&self, duration: Duration) -> DurationFuture {
+        DurationFuture::new(self.context.clone(), duration)
     }
 
     ///// Returns a coroutine that resolve once any of the underlying coroutine finishes. Note that
     ///// once this is done, all the others are dropped. The coroutines are resumed from top to
     ///// bottom, in case multiple of them are ready to make progress at the same time.
-    pub fn par_or<C, Marker: 'static>(&self, coro: C) -> ParOr<'_>
+    pub fn par_or<C, Marker>(&self, coro: C) -> ParOr
     where
         C: UninitCoroutine<Marker>,
-        C::Coroutine: 'static,
     {
-        // Safety: We are getting polled right now, therefore we have exclusive world access.
-        unsafe {
-            if let Some(c) = coro.init(
-                self.context.owner,
-                self.context.world_window.world_cell().world_mut(),
-            ) {
-                return ParOr::new(self, vec![SyncCell::new(Box::pin(c))]);
-            }
-        }
-        ParOr::new(self, vec![])
+        ParOr::new(self.context.clone()).with(coro)
     }
 
     ///// Returns a coroutine that resolve once all of the underlying coroutine finishes.
-    pub fn par_and<C, Marker>(&self, coro: C) -> ParAnd<'_>
+    pub fn par_and<C, Marker>(&self, coro: C) -> ParAnd
     where
         C: UninitCoroutine<Marker>,
     {
-        // Safety: We are getting polled right now, therefore we have exclusive world access.
-        unsafe {
-            if let Some(c) = coro.init(
-                self.context.owner,
-                self.context.world_window.world_cell().world_mut(),
-            ) {
-                return ParAnd::new(self, vec![SyncCell::new(Box::pin(c))]);
-            }
-        }
-        ParAnd::new(self, vec![])
+        ParAnd::new(self.context.clone()).with(coro)
+    }
+}
+
+impl CoroParam for Fib {
+    fn init(context: ParamContext, _world: &mut World, _access: &mut CoroAccess) -> Option<Self> {
+        Some(Self { context })
     }
 
-    ///// Returns a coroutine that resolve once the underlying coroutine finishes,
-    ///// in order to reuse coroutines, because the following won't compile:
-    ///// ```compile_fail
-    /////# use corentin::prelude::*;
-    /////async fn sub_coro(mut fib: Fib) { }
-    /////async fn main_coro(mut fib: Fib) {
-    /////  sub_coro(fib).await;
-    /////  sub_coro(fib).await;
-    /////}
-    /////```
-    ///// But the following will:
-    /////```
-    /////# use corentin::prelude::*;
-    /////async fn sub_coro(mut fib: Fib) { }
-    /////async fn main_coro(mut fib: Fib) {
-    /////  fib.on(sub_coro).await;
-    /////  fib.on(sub_coro).await;
-    /////}
-    /////```
-    //pub fn on<C, Marker>(&mut self, coro: C) -> On<C::Coroutine>
-    //where
-    //    C: UninitCoroutine<Marker>,
-    //{
-    //    unsafe {
-    //        if let Some(c) = coro.init(self.owner, self.world_window.world_cell().world_mut()) {
-    //            return On::new(self, c);
-    //        }
-    //    }
-    //    panic!()
-    //}
+    fn is_valid(_owner: Entity, _world: &World) -> bool {
+        true
+    }
 }
 
 macro_rules! impl_coro_function {
-    ($($param: ident),*) => {
-        #[allow(non_snake_case, unused_mut, unused_variables, unused_parens)]
-        impl<Func, Fut, $($param: CoroParam),*> CoroutineParamFunction<fn(Fib, $($param,)*) -> Fut> for Func
-        where
-            Func: FnOnce(Fib, $($param),*) -> Fut + Send + 'static,
-            Fut: Future<Output = ()> + Send + 'static,
-        {
-
-            type Future = Fut;
-            type Params = ($($param),*);
-
-            fn init(self, fib: Fib, params: Self::Params) -> Self::Future {
-                let ($(($param)),*) = params;
-                self(fib, $($param),*)
-            }
-        }
-    };
-}
-
-macro_rules! impl_coro_no_fib_function {
     ($($param: ident),*) => {
         #[allow(non_snake_case, unused_mut, unused_variables, unused_parens)]
         impl<Func, Fut, $($param: CoroParam),*> CoroutineParamFunction<fn($($param,)*) -> Fut> for Func
@@ -235,7 +169,7 @@ macro_rules! impl_coro_no_fib_function {
             type Future = Fut;
             type Params = ($($param),*);
 
-            fn init(self, _fib: Fib, params: Self::Params) -> Self::Future {
+            fn init(self, params: Self::Params) -> Self::Future {
                 let ($(($param)),*) = params;
                 self($($param),*)
             }
@@ -244,4 +178,3 @@ macro_rules! impl_coro_no_fib_function {
 }
 
 all_tuples!(impl_coro_function, 0, 16, P);
-all_tuples!(impl_coro_no_fib_function, 0, 16, P);

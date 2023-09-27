@@ -45,6 +45,7 @@ pub struct WorldWindow(Rc<Cell<*mut World>>);
 // if you start spawning thread inside a coroutine, or sending coroutine parameters via channels,
 // you may break the safety, therefore please don't do that. (thanks UwU)
 unsafe impl Send for WorldWindow {}
+unsafe impl Sync for WorldWindow {}
 
 impl WorldWindow {
     pub fn closed_window() -> Self {
@@ -101,6 +102,7 @@ impl YieldChannel {
 
 // Safety: Same as [`WorldWindow`].
 unsafe impl Send for YieldChannel {}
+unsafe impl Sync for YieldChannel {}
 
 /// All relevent values a [`CoroParam`] might need.
 #[derive(Clone)]
@@ -109,10 +111,6 @@ pub struct ParamContext {
     pub(crate) world_window: WorldWindow,
     pub(crate) yield_channel: YieldChannel,
 }
-
-/// Safety ? Who knows...
-unsafe impl Send for ParamContext {}
-unsafe impl Sync for ParamContext {}
 
 /// A readonly reference to a [`Component`] from the owning [`Entity`].
 ///
