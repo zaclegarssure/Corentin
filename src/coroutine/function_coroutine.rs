@@ -30,6 +30,7 @@ where
     yield_channel: YieldChannel,
     world_window: WorldWindow,
     owner: Entity,
+    access: CoroAccess,
 }
 
 unsafe impl<Marker, F> Send for FunctionCoroutine<Marker, F> where F: CoroutineParamFunction<Marker> {}
@@ -62,6 +63,10 @@ where
         //TODO validate the Fib as well
         F::Params::is_valid(self.owner, world)
     }
+
+    fn access(&self) -> &CoroAccess {
+        &self.access
+    }
 }
 
 pub trait CoroutineParamFunction<Marker>: Send + 'static {
@@ -90,13 +95,14 @@ where
         let mut access = CoroAccess::default();
 
         let params = F::Params::init(context.clone(), world, &mut access)?;
-        let fib = Fib { context, access };
+        let fib = Fib { context };
 
         Some(FunctionCoroutine {
             future: self.init(fib, params),
             yield_channel,
             world_window,
             owner,
+            access,
         })
     }
 }
@@ -104,7 +110,6 @@ where
 /// The `Fib` is the first param of a coroutine, all yielding is done througth it.
 pub struct Fib {
     pub(crate) context: ParamContext,
-    pub(crate) access: CoroAccess,
 }
 
 // Safety: No idea....

@@ -7,8 +7,8 @@ use bevy::prelude::Resource;
 use bevy::prelude::Timer;
 use bevy::prelude::World;
 use bevy::utils::synccell::SyncCell;
-use tinyset::SetUsize;
 
+use self::coro_param::CoroAccess;
 use self::observable::ObservableId;
 
 pub mod coro_param;
@@ -33,6 +33,10 @@ pub trait Coroutine: Send + 'static {
     /// Return true, if this coroutine is still valid. If it is not, it should be despawned. Should
     /// be called before [`resume`], to avoid any panic.
     fn is_valid(self: Pin<&mut Self>, world: &World) -> bool;
+
+    /// Returns which part of the [`World`] are accessed by this [`Coroutine`].
+    /// Useful if the [`Executor`] is multithreaded.
+    fn access(&self) -> &CoroAccess;
 }
 
 /// A shared list of modified values (observable), to easily notify the apropriate observers.
@@ -41,27 +45,6 @@ pub(crate) struct CoroWrites(pub VecDeque<(Entity, ComponentId)>);
 
 /// A heap allocated Coroutine
 pub(crate) type CoroObject = SyncCell<Pin<Box<dyn Coroutine>>>;
-
-/// Metadata of a coroutine
-///
-/// This includes
-/// - Which components are read and written to
-#[derive(Clone)]
-pub struct CoroMeta {
-    pub(crate) this_reads: SetUsize,
-    pub(crate) this_writes: SetUsize,
-    pub(crate) owner: Entity,
-}
-
-impl CoroMeta {
-    pub fn new(owner: Entity) -> Self {
-        Self {
-            owner,
-            this_reads: SetUsize::default(),
-            this_writes: SetUsize::default(),
-        }
-    }
-}
 
 /// The result after resuming a `Coroutine`. Either it yields an intermediate value, or return the
 /// final result.

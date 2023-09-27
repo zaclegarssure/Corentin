@@ -99,7 +99,6 @@ impl YieldChannel {
     }
 }
 
-
 // Safety: Same as [`WorldWindow`].
 unsafe impl Send for YieldChannel {}
 
@@ -308,7 +307,10 @@ pub struct Opt<T> {
 impl<T: CoroParam> Opt<T> {
     pub fn get(&self) -> Option<&T> {
         unsafe {
-            if T::is_valid(self.context.owner, self.context.world_window.world_cell().world()) {
+            if T::is_valid(
+                self.context.owner,
+                self.context.world_window.world_cell().world(),
+            ) {
                 Some(&self.inner)
             } else {
                 None
@@ -318,7 +320,10 @@ impl<T: CoroParam> Opt<T> {
 
     pub fn get_mut(&mut self) -> Option<&mut T> {
         unsafe {
-            if T::is_valid(self.context.owner, self.context.world_window.world_cell().world()) {
+            if T::is_valid(
+                self.context.owner,
+                self.context.world_window.world_cell().world(),
+            ) {
                 Some(&mut self.inner)
             } else {
                 None
@@ -331,13 +336,10 @@ impl<T: CoroParam> CoroParam for Opt<T> {
     fn init(context: ParamContext, world: &mut World, access: &mut CoroAccess) -> Option<Self> {
         let t = T::init(context.clone(), world, access)?;
 
-        Some(Self {
-            context,
-            inner: t
-        })
+        Some(Self { context, inner: t })
     }
 
-    fn is_valid(owner: Entity, world: &World) -> bool {
+    fn is_valid(_owner: Entity, _world: &World) -> bool {
         true
     }
 }
