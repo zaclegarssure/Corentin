@@ -70,36 +70,6 @@ mod tests {
         });
     }
 
-    //#[test]
-    //fn wait_on_sub_coroutine() {
-    //    async fn sub_coro(mut fib: Fib) {
-    //        fib.next_tick().await;
-    //        fib.next_tick().await;
-    //    }
-
-    //    let mut world = World::new();
-    //    let e = world.spawn_empty().id();
-    //    world.insert_resource(Executor::new());
-    //    world.insert_resource(Time::new(Instant::now()));
-    //    world.resource_scope(|w, mut executor: Mut<Executor>| {
-    //        let a = Arc::new(Mutex::new(0));
-    //        let b = Arc::clone(&a);
-    //        executor.add_fn(e, move |mut fib: Fib| async move {
-    //            *b.lock().unwrap() += 1;
-    //            fib.on(sub_coro).await;
-    //            *b.lock().unwrap() += 1;
-    //        });
-    //        executor.tick(w);
-    //        assert_eq!(*a.lock().unwrap(), 1);
-    //        executor.tick(w);
-    //        assert_eq!(*a.lock().unwrap(), 1);
-    //        executor.tick(w);
-    //        assert_eq!(*a.lock().unwrap(), 2);
-    //        executor.tick(w);
-    //        assert_eq!(*a.lock().unwrap(), 2);
-    //    });
-    //}
-
     #[test]
     fn wait_on_external_change() {
         let mut world = World::new();
@@ -320,164 +290,40 @@ mod tests {
         });
     }
 
-    ////#[test]
-    ////fn multiple_write_dont_override_too_soon() {
-    ////    let mut world = World::new();
-    ////    world.insert_resource(Executor::new());
-    ////    world.insert_resource(Time::new(Instant::now()));
-    ////    let e = world.spawn(ExampleComponent(0)).id();
-    ////    let a = Arc::new(Mutex::new(0));
-    ////    let b = Arc::clone(&a);
-    ////    world.resource_scope(|w, mut executor: Mut<Executor>| {
-    ////        executor.add(move |mut fib| async move {
-    ////            for _ in 0..5 {
-    ////                let (_, mut example) =
-    ////                    fib.next_tick().then_grab::<&mut ExampleComponent>(e).await;
-    ////                example.0 += 1;
-    ////            }
-    ////        });
-    ////        executor.add(move |mut fib| async move {
-    ////            for _ in 0..5 {
-    ////                let (_, mut example) =
-    ////                    fib.next_tick().then_grab::<&mut ExampleComponent>(e).await;
-    ////                example.0 += 1;
-    ////            }
-    ////        });
-    ////        executor.add(|mut fib| async move {
-    ////            loop {
-    ////                fib.change::<ExampleComponent>(e).await;
-    ////                *a.lock().unwrap() += 1;
-    ////            }
-    ////        });
+    #[test]
+    fn waiting_on_internal_and_external_change_is_correct() {
+        let mut world = World::new();
+        world.init_resource::<Executor>();
+        world.init_resource::<CoroWrites>();
+        world.insert_resource(Time::new(Instant::now()));
+        let e = world.spawn(ExampleComponent(0)).id();
 
-    ////        for i in 0..5 {
-    ////            executor.tick(w);
-    ////            assert_eq!(*b.lock().unwrap(), i * 2);
-    ////            w.clear_trackers();
-    ////        }
-    ////    });
-    ////}
+        let a = Arc::new(Mutex::new(0));
+        let b = Arc::clone(&a);
 
-    //#[test]
-    //fn waiting_on_internal_change_do_not_consume_twice_events() {
-    //    let mut world = World::new();
-    //    world.insert_resource(Executor::new());
-    //    world.insert_resource(Time::new(Instant::now()));
-    //    let e1 = world.spawn(ExampleComponent(0)).id();
-    //    let e2 = world.spawn(ExampleComponent(0)).id();
-    //    let a = Arc::new(Mutex::new(0));
-    //    let b = Arc::clone(&a);
-    //    world.resource_scope(|w, mut executor: Mut<Executor>| {
-    //        executor.add(move |mut fib| async move {
-    //            for _ in 0..5 {
-    //                let (_, mut example) =
-    //                    fib.next_tick().then_grab::<&mut ExampleComponent>(e1).await;
-    //                example.0 += 1;
-    //            }
-    //        });
-    //        executor.add(move |mut fib| async move {
-    //            for _ in 0..5 {
-    //                let (_, mut example) =
-    //                    fib.next_tick().then_grab::<&mut ExampleComponent>(e2).await;
-    //                example.0 += 1;
-    //            }
-    //        });
-    //        executor.add(|mut fib| async move {
-    //            loop {
-    //                fib.change::<ExampleComponent>(e1).await;
-    //                *a.lock().unwrap() += 1;
-    //                fib.change::<ExampleComponent>(e2).await;
-    //                *a.lock().unwrap() += 1;
-    //            }
-    //        });
+        coroutine(|ex: Rd<ExampleComponent>| async move {
+            loop {
+                ex.on_change().await;
+                *b.lock().unwrap() += 1;
+            }
+        })
+        .apply(e, &mut world);
 
-    //        for i in 0..5 {
-    //            executor.tick(w);
-    //            assert_eq!(*b.lock().unwrap(), i * 2);
-    //            w.clear_trackers();
-    //        }
-    //    });
-    //}
+        coroutine(|fib: Fib, mut ex: Wr<ExampleComponent>| async move {
+            loop {
+                fib.next_tick().await;
+                ex.get_mut().0 += 1;
+            }
+        })
+        .apply(e, &mut world);
 
-    //#[test]
-    //fn not_writing_to_mut_component_has_no_effect() {
-    //    let mut world = World::new();
-    //    world.insert_resource(Executor::new());
-    //    world.insert_resource(Time::new(Instant::now()));
-    //    let e = world.spawn(ExampleComponent(0)).id();
-    //    let a = Arc::new(Mutex::new(0));
-    //    let b = Arc::clone(&a);
-    //    world.resource_scope(|w, mut executor: Mut<Executor>| {
-    //        executor.add(move |mut fib| async move {
-    //            for _ in 0..5 {
-    //                let (_, mut example) =
-    //                    fib.next_tick().then_grab::<&mut ExampleComponent>(e).await;
-    //                example.0 += 1;
-    //            }
-    //        });
-    //        executor.add(move |mut fib| async move {
-    //            for _ in 0..5 {
-    //                let (_, mut example) =
-    //                    fib.next_tick().then_grab::<&mut ExampleComponent>(e).await;
-    //                if false {
-    //                    example.0 += 1;
-    //                }
-    //            }
-    //        });
-    //        executor.add(|mut fib| async move {
-    //            loop {
-    //                fib.change::<ExampleComponent>(e).await;
-    //                *a.lock().unwrap() += 1;
-    //            }
-    //        });
-
-    //        for i in 0..5 {
-    //            executor.tick(w);
-    //            assert_eq!(*b.lock().unwrap(), i);
-    //            w.clear_trackers();
-    //        }
-    //    });
-    //}
-
-    //#[test]
-    //fn waiting_on_internal_and_external_change_is_correct() {
-    //    let mut world = World::new();
-    //    world.insert_resource(Executor::new());
-    //    world.insert_resource(Time::new(Instant::now()));
-    //    let e = world.spawn(ExampleComponent(0)).id();
-    //    let a = Arc::new(Mutex::new(0));
-    //    let b = Arc::clone(&a);
-    //    world.resource_scope(|w, mut executor: Mut<Executor>| {
-    //        executor.add(move |mut fib| async move {
-    //            for _ in 0..5 {
-    //                let (_, mut example) =
-    //                    fib.next_tick().then_grab::<&mut ExampleComponent>(e).await;
-    //                example.0 += 1;
-    //            }
-    //        });
-    //        executor.add(move |mut fib| async move {
-    //            for _ in 0..5 {
-    //                let (_, mut example) =
-    //                    fib.next_tick().then_grab::<&mut ExampleComponent>(e).await;
-
-    //                if false {
-    //                    example.0 += 1;
-    //                }
-    //            }
-    //        });
-    //        executor.add(|mut fib| async move {
-    //            loop {
-    //                fib.change::<ExampleComponent>(e).await;
-    //                *a.lock().unwrap() += 1;
-    //            }
-    //        });
-
-    //        for i in 0..5 {
-    //            w.entity_mut(e).get_mut::<ExampleComponent>().unwrap().0 += 1;
-    //            executor.tick(w);
-    //            assert_eq!(*b.lock().unwrap(), i * 2);
-    //            w.clear_trackers();
-    //        }
-    //    });
-    //}
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
+            for i in 0..5 {
+                w.entity_mut(e).get_mut::<ExampleComponent>().unwrap().0 += 1;
+                executor.tick(w);
+                assert_eq!(*a.lock().unwrap(), i * 2);
+                w.clear_trackers();
+            }
+        });
+    }
 }
