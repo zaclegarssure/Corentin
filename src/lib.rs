@@ -10,7 +10,9 @@ pub mod prelude {
     #[doc(hidden)]
     pub use crate::commands::{coroutine, AddCoroutine};
     #[doc(hidden)]
-    pub use crate::coroutine::coro_param::{component::Rd, component::Wr, Opt};
+    pub use crate::coroutine::coro_param::{
+        component::Rd, component::Wr, resource::RdRes, resource::WrRes, Opt,
+    };
     #[doc(hidden)]
     pub use crate::coroutine::function_coroutine::Fib;
     #[doc(hidden)]

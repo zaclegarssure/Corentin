@@ -1,13 +1,19 @@
-use std::{cell::Cell, rc::Rc};
+use std::{
+    cell::Cell,
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
+    rc::Rc,
+};
 
 use super::{CoroAccess, WaitingReason};
 use bevy::{
     ecs::{component::ComponentId, world::unsafe_world_cell::UnsafeWorldCell},
-    prelude::{Component, Entity, World},
+    prelude::{Component, Entity, Mut, World},
     utils::all_tuples,
 };
 
 pub mod component;
+pub mod resource;
 
 /// Any async function that takes only [`CoroParam`] as arguments can
 /// automatically be turned into a [`Coroutine`].
@@ -96,6 +102,58 @@ pub struct ParamContext {
     pub(crate) owner: Entity,
     pub(crate) world_window: WorldWindow,
     pub(crate) yield_channel: YieldChannel,
+}
+
+/// A guarded readonly reference, cannot be held accros awaiting points.
+pub struct RdGuard<'a, T> {
+    value: &'a T,
+    _phantom: PhantomData<*const T>,
+}
+
+impl<'a, T> RdGuard<'a, T> {
+    pub fn new(value: &'a T) -> Self {
+        Self {
+            value,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<'a, T> Deref for RdGuard<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.value
+    }
+}
+
+/// A guarded exclusive write reference, cannot be held accros awaiting points.
+pub struct WrGuard<'a, T> {
+    value: Mut<'a, T>,
+    _phantom: PhantomData<*const T>,
+}
+
+impl<'a, T> WrGuard<'a, T> {
+    pub fn new(value: Mut<'a, T>) -> Self {
+        Self {
+            value,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<'a, T> Deref for WrGuard<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.value.deref()
+    }
+}
+
+impl<'a, T> DerefMut for WrGuard<'a, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.value.deref_mut()
+    }
 }
 
 pub struct Opt<T> {

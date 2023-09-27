@@ -1,16 +1,13 @@
-use std::{
-    marker::PhantomData,
-    ops::{Deref, DerefMut},
-};
+use std::marker::PhantomData;
 
-use bevy::prelude::{Component, Entity, Mut, World};
+use bevy::prelude::{Component, Entity, World};
 
 use crate::coroutine::{
     observable::{ObservableId, OnChange},
     CoroAccess, CoroWrites, SourceId,
 };
 
-use super::{CoroParam, ParamContext};
+use super::{CoroParam, ParamContext, RdGuard, WrGuard};
 
 /// A readonly reference to a [`Component`] from the owning [`Entity`].
 ///
@@ -45,36 +42,20 @@ impl<T: Component> CoroParam for Rd<T> {
     }
 }
 
-/// A guarded readonly reference, cannot be hold accros awaiting points.
-pub struct RdGuard<'a, T> {
-    value: &'a T,
-    _phantom: PhantomData<*const T>,
-}
-
-impl<'a, T: Component> Deref for RdGuard<'a, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        self.value
-    }
-}
-
 impl<T: Component> Rd<T> {
     /// Return the current value of the [`Component`]. The result ([`InGuard`]) cannot be held
     /// accros any await.
     pub fn get(&self) -> RdGuard<'_, T> {
         unsafe {
-            RdGuard {
-                value: self
-                    .context
+            RdGuard::new(
+                self.context
                     .world_window
                     .world_cell()
                     .get_entity(self.context.owner)
                     .unwrap()
                     .get::<T>()
                     .unwrap(),
-                _phantom: PhantomData,
-            }
+            )
         }
     }
 
@@ -95,6 +76,10 @@ impl<T: Component> Rd<T> {
     }
 }
 
+/// A read-write exclusive reference to a [`Component`] from the owning [`Entity`].
+///
+/// Note that a Coroutine with such parameter will be canceled if the entity does not have the
+/// relevent component.
 pub struct Wr<T: Component> {
     _phantom: PhantomData<T>,
     context: ParamContext,
@@ -122,25 +107,6 @@ impl<T: Component> CoroParam for Wr<T> {
     }
 }
 
-pub struct WrGuard<'a, T> {
-    value: Mut<'a, T>,
-    _phantom: PhantomData<*const T>,
-}
-
-impl<'a, T: Component> Deref for WrGuard<'a, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        self.value.deref()
-    }
-}
-
-impl<'a, T: Component> DerefMut for WrGuard<'a, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.value.deref_mut()
-    }
-}
-
 impl<T: Component> Wr<T> {
     pub fn get(&self) -> RdGuard<'_, T> {
         let value = unsafe {
@@ -153,10 +119,7 @@ impl<T: Component> Wr<T> {
                 .unwrap()
         };
 
-        RdGuard {
-            value,
-            _phantom: PhantomData,
-        }
+        RdGuard::new(value)
     }
 
     pub fn get_mut(&mut self) -> WrGuard<'_, T> {
@@ -166,6 +129,7 @@ impl<T: Component> Wr<T> {
             cell.get_resource_mut::<CoroWrites>()
                 .unwrap()
                 .0
+                // TODO fix write
                 .push_back((self.context.owner, c_id));
 
             let value = cell
@@ -173,10 +137,8 @@ impl<T: Component> Wr<T> {
                 .unwrap()
                 .get_mut::<T>()
                 .unwrap();
-            WrGuard {
-                value,
-                _phantom: PhantomData,
-            }
+
+            WrGuard::new(value)
         }
     }
 
