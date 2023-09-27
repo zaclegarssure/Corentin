@@ -11,11 +11,12 @@ use std::task::Poll;
 
 use super::coro_param::ParamContext;
 use super::coro_param::WorldWindow;
-use super::coro_param::{CoroAccess, CoroParam, YieldChannel};
+use super::coro_param::{CoroParam, YieldChannel};
 use super::duration::DurationFuture;
 use super::duration::NextTick;
 use super::par_and::ParAnd;
 use super::par_or::ParOr;
+use super::CoroAccess;
 use super::UninitCoroutine;
 use super::{waker, Coroutine, CoroutineResult, WaitingReason};
 

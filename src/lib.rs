@@ -1,17 +1,16 @@
 //! A coroutine library for the [bevy](https://github.com/bevyengine/bevy) game engine.
 //!
 //! TODO: Show example
+pub mod commands;
 pub mod coroutine;
 pub mod executor;
-
-mod commands;
-mod plugin;
+pub mod plugin;
 
 pub mod prelude {
     #[doc(hidden)]
     pub use crate::commands::{coroutine, AddCoroutine};
     #[doc(hidden)]
-    pub use crate::coroutine::coro_param::{Opt, Rd, Wr};
+    pub use crate::coroutine::coro_param::{component::Rd, component::Wr, Opt};
     #[doc(hidden)]
     pub use crate::coroutine::function_coroutine::Fib;
     #[doc(hidden)]

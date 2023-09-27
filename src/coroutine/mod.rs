@@ -7,8 +7,9 @@ use bevy::prelude::Resource;
 use bevy::prelude::Timer;
 use bevy::prelude::World;
 use bevy::utils::synccell::SyncCell;
+use bevy::utils::HashMap;
+use tinyset::SetUsize;
 
-use self::coro_param::CoroAccess;
 use self::observable::ObservableId;
 
 pub mod coro_param;
@@ -40,8 +41,55 @@ pub trait Coroutine: Send + 'static {
 }
 
 /// A shared list of modified values (observable), to easily notify the apropriate observers.
+/// TODO: Find something better
 #[derive(Resource, Default)]
 pub(crate) struct CoroWrites(pub VecDeque<(Entity, ComponentId)>);
+
+#[derive(Default, Clone)]
+pub struct CoroAccess {
+    this_reads: HashMap<SourceId, SetUsize>,
+    this_writes: HashMap<SourceId, SetUsize>,
+}
+
+impl CoroAccess {
+    /// Add a write access. Returns false if there is a conflict.
+    /// The access is updated only when no conflicts are found.
+    pub fn add_write(&mut self, to: SourceId, component: ComponentId) -> bool {
+        if let Some(reads) = self.this_reads.get(&to) {
+            if reads.contains(component.index()) {
+                return false;
+            }
+        }
+
+        self.this_writes
+            .entry(to)
+            .or_default()
+            .insert(component.index())
+    }
+
+    /// Add a read access. Returns false if there is a conflict.
+    /// The access is updated only when no conflicts are found.
+    pub fn add_read(&mut self, to: SourceId, component: ComponentId) -> bool {
+        if let Some(reads) = self.this_writes.get(&to) {
+            if reads.contains(component.index()) {
+                return false;
+            }
+        }
+
+        self.this_reads
+            .entry(to)
+            .or_default()
+            .insert(component.index());
+        true
+    }
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Hash)]
+pub enum SourceId {
+    Entity(Entity),
+    AllEntities,
+    World,
+}
 
 /// A heap allocated Coroutine
 pub(crate) type CoroObject = SyncCell<Pin<Box<dyn Coroutine>>>;
