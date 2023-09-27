@@ -1,32 +1,34 @@
-use std::time::Duration;
-
-use bevy::prelude::*;
+use bevy::{prelude::*, sprite::MaterialMesh2dBundle};
 use corentin::prelude::*;
 
 fn main() {
     App::new()
-        .add_plugins(DefaultPlugins)
-        .insert_resource(Executor::new())
-        .add_systems(Startup, setup_coroutines)
-        .add_systems(Update, run_coroutines)
+        .add_plugins((DefaultPlugins, CorentinPlugin))
+        .add_systems(Startup, setup_scene)
         .run();
 }
 
-fn setup_coroutines(mut executor: ResMut<Executor>) {
-    executor.add(|mut fib| async move {
-        let mut i = 0;
-        loop {
-            let dt = fib.next_tick().await;
-            println!("Last frame lasted for {}", dt.as_secs_f32());
-            fib.duration(Duration::from_secs(1)).await;
-            i += 1;
-            println!("This coroutine has started since {} seconds", i);
-        }
-    });
-}
+fn setup_scene(
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    mut commands: Commands,
+) {
+    commands.spawn(Camera2dBundle::default());
 
-fn run_coroutines(world: &mut World) {
-    world.resource_scope(|w, mut exec: Mut<Executor>| {
-        exec.tick(w);
-    })
+    // Circle
+    commands
+        .spawn(MaterialMesh2dBundle {
+            mesh: meshes.add(shape::Circle::new(50.).into()).into(),
+            material: materials.add(ColorMaterial::from(Color::PURPLE)),
+            transform: Transform::from_translation(Vec3::new(-150., 0., 0.)),
+            ..default()
+        })
+        .add(coroutine(
+            |fib: Fib, mut transform: Wr<Transform>| async move {
+                loop {
+                    let dt = fib.next_tick().await;
+                    transform.get_mut().translation.x += 100.0 * dt.as_secs_f32();
+                }
+            },
+        ));
 }

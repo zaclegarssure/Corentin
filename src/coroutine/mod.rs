@@ -1,304 +1,137 @@
-use std::cell::Cell;
-use std::future::Future;
-use std::rc::Rc;
-use std::time::Duration;
+use std::collections::VecDeque;
+use std::pin::Pin;
 
 use bevy::ecs::component::ComponentId;
-use bevy::ecs::world::unsafe_world_cell::UnsafeWorldCell;
-use bevy::prelude::Component;
 use bevy::prelude::Entity;
+use bevy::prelude::Resource;
 use bevy::prelude::Timer;
 use bevy::prelude::World;
+use bevy::utils::synccell::SyncCell;
+use bevy::utils::HashMap;
+use tinyset::SetUsize;
 
-use crate::executor::msg_channel::Sender;
-use crate::executor::CoroObject;
+use self::observable::ObservableId;
 
-use duration::{DurationFuture, NextTick};
-use on::On;
-use par_and::ParAnd;
-use par_or::ParOr;
-use when::Change;
-
-use self::grab::GrabCoroutine;
-use self::grab::GrabCoroutineVoid;
-use self::grab::GrabParam;
-use self::grab::GrabReason;
-
+pub mod coro_param;
 pub mod duration;
-pub mod grab;
-mod on;
-mod par_and;
-mod par_or;
-mod when;
+pub mod function_coroutine;
+pub mod observable;
+pub mod on;
+pub mod par_and;
+pub mod par_or;
+mod waker;
 
+/// A coroutine that can be added to an [`Entity`](bevy::prelude::Entity)
+///
+pub trait Coroutine: Send + 'static {
+    /// Resume execution of this coroutine.
+    ///
+    /// It will returns [`CoroutineResult::Yield`] if it can be resumed once again
+    /// or [`CoroutineResult::Done`] if it is done executing. Note that resuming a coroutine which
+    /// has terminate execution will panic.
+    fn resume(self: Pin<&mut Self>, world: &mut World) -> CoroutineResult<WaitingReason, ()>;
+
+    /// Return true, if this coroutine is still valid. If it is not, it should be despawned. Should
+    /// be called before [`resume`], to avoid any panic.
+    fn is_valid(self: Pin<&mut Self>, world: &World) -> bool;
+
+    /// Returns which part of the [`World`] are accessed by this [`Coroutine`].
+    /// Useful if the [`Executor`] is multithreaded.
+    fn access(&self) -> &CoroAccess;
+}
+
+/// A shared list of modified values (observable), to easily notify the apropriate observers.
+/// TODO: Find something better
+#[derive(Resource, Default)]
+pub(crate) struct CoroWrites(pub VecDeque<(Entity, ComponentId)>);
+
+#[derive(Default, Clone)]
+pub struct CoroAccess {
+    this_reads: HashMap<SourceId, SetUsize>,
+    this_writes: HashMap<SourceId, SetUsize>,
+}
+
+impl CoroAccess {
+    /// Add a write access. Returns false if there is a conflict.
+    /// The access is updated only when no conflicts are found.
+    pub fn add_write(&mut self, to: SourceId, component: ComponentId) -> bool {
+        if let Some(reads) = self.this_reads.get(&to) {
+            if reads.contains(component.index()) {
+                return false;
+            }
+        }
+
+        self.this_writes
+            .entry(to)
+            .or_default()
+            .insert(component.index())
+    }
+
+    /// Add a read access. Returns false if there is a conflict.
+    /// The access is updated only when no conflicts are found.
+    pub fn add_read(&mut self, to: SourceId, component: ComponentId) -> bool {
+        if let Some(reads) = self.this_writes.get(&to) {
+            if reads.contains(component.index()) {
+                return false;
+            }
+        }
+
+        self.this_reads
+            .entry(to)
+            .or_default()
+            .insert(component.index());
+        true
+    }
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Hash)]
+pub enum SourceId {
+    Entity(Entity),
+    AllEntities,
+    World,
+}
+
+/// A heap allocated Coroutine
+pub(crate) type CoroObject = SyncCell<Pin<Box<dyn Coroutine>>>;
+
+/// The result after resuming a `Coroutine`. Either it yields an intermediate value, or return the
+/// final result.
+pub enum CoroutineResult<Y, R> {
+    Yield(Y),
+    Done(R),
+}
+
+pub trait IntoCoroutine<Marker> {
+    type Coroutine: Coroutine;
+
+    fn into_coroutine(self, owner: Entity) -> Self::Coroutine;
+}
+
+/// Any type that can be turned into a [`Coroutine`], given an access to the [`World`], to run
+/// arbitrary setup logic, such as registering [`Component`].
+pub trait UninitCoroutine<Marker> {
+    type Coroutine: Coroutine;
+
+    /// Initialize the Coroutine, or return None if it is invalid.
+    ///
+    /// The world should be used to initialize any accesses, such as registering any
+    /// [`Component`](bevy::prelude::Component).
+    fn init(self, owner: Entity, world: &mut World) -> Option<Self::Coroutine>;
+}
+
+/// A [`Coroutine`] can only yield one of these messages Used by the [`Executor`] to know when to
+/// resume a coroutine.
+pub enum WaitingReason {
+    Tick,
+    Duration(Timer),
+    Changed(ObservableId),
+    ParOr { coroutines: Vec<CoroObject> },
+    ParAnd { coroutines: Vec<CoroObject> },
+}
+
+// TODO put that somewhere else
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub(crate) enum CoroState {
     Halted,
     Running,
 }
-
-pub(crate) enum WaitingReason {
-    Tick,
-    Duration(Timer),
-    Changed {
-        from: Entity,
-        component: ComponentId,
-    },
-    ParOr {
-        coroutines: Vec<CoroObject>,
-    },
-    ParAnd {
-        coroutines: Vec<CoroObject>,
-    },
-}
-
-/// A "Fiber" object, througth which a coroutine
-/// can interact with the rest of the world.
-pub struct Fib {
-    // Maybe replace by a real sender receiver channel at some point
-    pub(crate) yield_sender: Sender<WaitingReason>,
-    pub(crate) owner: Option<Entity>,
-    pub(crate) world_window: Rc<Cell<Option<*mut World>>>,
-    pub(crate) grab_sender: Sender<GrabReason>,
-}
-
-impl Fib {
-    /// Done like so, to avoid user code to be able to clone the Fiber (can lead to UB)
-    pub(crate) fn clone(&self) -> Self {
-        Self {
-            yield_sender: self.yield_sender.clone(),
-            owner: self.owner,
-            world_window: self.world_window.clone(),
-            grab_sender: self.grab_sender.clone(),
-        }
-    }
-}
-
-impl Fib {
-    fn component_id<T: Component>(&self) -> ComponentId {
-        // SAFETY: We are in the polling phase, therefore the coroutine is the only one running.
-        unsafe {
-            let w = &mut *self
-                .world_window
-                .get()
-                .expect("This function should have been called when a coroutine is polled");
-            w.component_id::<T>()
-                .expect("Component should have been initialized in the world")
-        }
-    }
-
-    pub(crate) unsafe fn world_window(&self) -> UnsafeWorldCell<'_> {
-        let a = &mut *self
-            .world_window
-            .get()
-            .expect("This function should have been called when a coroutine is polled");
-        a.as_unsafe_world_cell()
-    }
-}
-
-// SAFETY: Same as Executor, the sender field is only accessed when polled,
-// which is done in a single threaded context.
-unsafe impl Send for Fib {}
-unsafe impl Sync for Fib {}
-
-impl Fib {
-    /// Returns coroutine that resolve the next time the [`Executor`] is ticked (via
-    /// [`run`][crate::executor::Executor::run] for instance). It returns the duration
-    /// of the last frame (delta time).
-    ///
-    /// [`Executor`]: crate::executor::Executor
-    pub fn next_tick(&mut self) -> NextTick<'_> {
-        NextTick::new(self)
-    }
-
-    /// Returns a coroutine that resolve after a certain [`Duration`]. Note that if the duration
-    /// is smaller than the time between two tick of the [`Executor`] it won't be compensated.
-    ///
-    /// [`Executor`]: crate::executor::Executor
-    pub fn duration(&mut self, duration: Duration) -> DurationFuture<'_> {
-        DurationFuture::new(self, duration)
-    }
-
-    /// Returns a coroutine that resolve once the [`Component`] of type `T` from a particular
-    /// [`Entity`] has changed. Note that if the entity or the components is removed,
-    /// this coroutine is dropped.
-    pub fn change<T: Component + Unpin>(&mut self, from: Entity) -> Change<'_, T> {
-        Change::new(self, from)
-    }
-
-    /// Returns a coroutine that resolve once any of the underlying coroutine finishes. Note that
-    /// once this is done, all the others are dropped. The coroutines are resumed from top to
-    /// bottom, in case multiple of them are ready to make progress at the same time.
-    pub fn par_or<C, F>(&mut self, closure: C) -> ParOr<'_>
-    where
-        F: Coroutine<'static>,
-        C: FnOnce(Fib) -> F,
-    {
-        let fib = self.clone();
-        let fut = Box::pin(closure(fib));
-        ParOr::new(self, vec![fut])
-    }
-
-    /// Returns a coroutine that resolve once the underlying coroutine finishes,
-    /// in order to reuse coroutines, because the following won't compile:
-    /// ```compile_fail
-    ///# use corentin::prelude::*;
-    ///async fn sub_coro(mut fib: Fib) { }
-    ///async fn main_coro(mut fib: Fib) {
-    ///  sub_coro(fib).await;
-    ///  sub_coro(fib).await;
-    ///}
-    ///```
-    /// But the following will:
-    ///```
-    ///# use corentin::prelude::*;
-    ///async fn sub_coro(mut fib: Fib) { }
-    ///async fn main_coro(mut fib: Fib) {
-    ///  fib.on(sub_coro).await;
-    ///  fib.on(sub_coro).await;
-    ///}
-    ///```
-    pub fn on<C, F>(&mut self, closure: C) -> On<F>
-    where
-        F: Coroutine<'static>,
-        C: FnOnce(Fib) -> F,
-    {
-        let fib = self.clone();
-        let fut = closure(fib);
-        On::new(self, fut)
-    }
-
-    /// Same as [`Self::on()`] but with a coroutine that expect
-    /// an owner entity as a parameter.
-    pub fn on_self<C, F>(&mut self, closure: C) -> On<F>
-    where
-        F: Coroutine<'static>,
-        C: FnOnce(Fib, Entity) -> F,
-    {
-        let fib = self.clone();
-        let fut = closure(
-            fib,
-            self.owner
-                .expect("Cannot call on_self if the coroutine is not owned by any entity."),
-        );
-        On::new(self, fut)
-    }
-
-    /// Returns a coroutine that resolve once all of the underlying coroutine finishes. The
-    /// coroutines are resumed from top to bottom, in case multiple of them are ready to make
-    /// progress at the same time.
-    pub fn par_and<C, F>(&mut self, closure: C) -> ParAnd<'_>
-    where
-        F: Coroutine<'static>,
-        C: FnOnce(Fib) -> F,
-    {
-        let fib = self.clone();
-        let fut = Box::pin(closure(fib));
-        ParAnd::new(self, vec![fut])
-    }
-
-    pub fn owner(&self) -> Option<Entity> {
-        self.owner
-    }
-}
-
-/// Traits defined on all primitive (next_tick, par_and, ...)
-pub trait Primitive<'cx, O>: Future<Output = O> + 'cx + Send + Sync + Sized {
-    fn get_context(&self) -> &Fib;
-
-    /// Returns a set of component from an entity, once this coroutine
-    /// has finished. For instance:
-    ///```
-    ///# use corentin::prelude::*;
-    ///# use bevy::prelude::*;
-    ///#[derive(Component)]
-    ///struct Foo(u64);
-    ///#[derive(Component)]
-    ///struct Bar(u64);
-    ///
-    ///async fn coroutine(mut fib: Fib, e: Entity) {
-    ///     loop {
-    ///         let (dt, (mut foo, bar)) = fib.next_tick().then_grab::<(&mut Foo, &Bar)>(e).await;
-    ///         foo.0 += bar.0 * dt.as_secs();
-    ///     }
-    ///}
-    ///```
-    /// Note that the data is lifetime bounded to the Context, meaning it cannot outlive
-    /// accross awaiting points, for instance this will not compile
-    /// ```compile_fail
-    ///# use corentin::prelude::*;
-    ///# use bevy::prelude::*;
-    ///#[derive(Component)]
-    ///struct Foo(u64);
-    ///#[derive(Component)]
-    ///struct Bar(u64);
-    ///
-    ///async fn coroutine(mut fib: Fib, e: Entity) {
-    ///     loop {
-    ///         let (dt, (mut foo, bar)) = fib.next_tick().then_grab::<(&mut Foo, &Bar)>(e).await;
-    ///         fib.next_tick().await;
-    ///         foo.0 += bar.0 * dt.as_secs();
-    ///     }
-    ///}
-    ///```
-    fn then_grab<'cx2, P: GrabParam>(self, from: Entity) -> GrabCoroutine<'cx2, P, Self, O>
-    where
-        'cx: 'cx2,
-    {
-        let fib = self.get_context().clone();
-        GrabCoroutine::new(fib, from, self)
-    }
-}
-
-pub trait PrimitiveVoid<'cx>: Future<Output = ()> + 'cx + Send + Sync + Sized {
-    fn get_context(&self) -> &Fib;
-
-    /// Returns a set of component from an entity, once this coroutine
-    /// has finished. For instance:
-    ///```
-    ///# use corentin::prelude::*;
-    ///# use bevy::prelude::*;
-    ///# use std::time::Duration;
-    ///#[derive(Component)]
-    ///struct Foo(u64);
-    ///#[derive(Component)]
-    ///struct Bar(u64);
-    ///
-    ///async fn coroutine(mut fib: Fib, e: Entity) {
-    ///     loop {
-    ///         let (mut foo, bar) = fib.duration(Duration::from_secs(1)).then_grab::<(&mut Foo, &Bar)>(e).await;
-    ///         foo.0 += bar.0;
-    ///     }
-    ///}
-    ///```
-    /// Note that the data is lifetime bounded to the Context, meaning it cannot outlive
-    /// accross awaiting points, for instance this will not compile
-    /// ```compile_fail
-    ///# use corentin::prelude::*;
-    ///# use bevy::prelude::*;
-    ///# use std::time::Duration;
-    ///#[derive(Component)]
-    ///struct Foo(u64);
-    ///#[derive(Component)]
-    ///struct Bar(u64);
-    ///
-    ///async fn coroutine(mut fib: Fib, e: Entity) {
-    ///     loop {
-    ///         let (mut foo, bar) = fib.duration(Duration::from_secs(1)).then_grab::<(&mut Foo, &Bar)>(e).await;
-    ///         fib.next_tick().await;
-    ///         foo.0 += bar.0;
-    ///     }
-    ///}
-    ///```
-    fn then_grab<'cx2, P: GrabParam>(self, from: Entity) -> GrabCoroutineVoid<'cx2, P, Self>
-    where
-        'cx: 'cx2,
-    {
-        let fib = self.get_context().clone();
-        GrabCoroutineVoid::new(fib, from, self)
-    }
-}
-
-/// Shorthand notation
-pub trait Coroutine<'cx, O = ()>: Future<Output = O> + 'cx + Send + Sync {}
-impl<'cx, O, T> Coroutine<'cx, O> for T where T: Future<Output = O> + 'cx + Send + Sync {}

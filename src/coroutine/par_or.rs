@@ -1,36 +1,51 @@
-use crate::coroutine::{CoroState, Fib, WaitingReason};
+use bevy::utils::synccell::SyncCell;
+
+use crate::coroutine::{CoroState, WaitingReason};
 
 use std::future::Future;
-use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
-use super::PrimitiveVoid;
+use super::coro_param::ParamContext;
+use super::CoroObject;
+use super::UninitCoroutine;
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct ParOr<'a> {
-    fib: &'a Fib,
-    coroutines: Vec<Pin<Box<(dyn Future<Output = ()> + 'static + Send + Sync)>>>,
+pub struct ParOr {
+    context: ParamContext,
+    coroutines: Vec<CoroObject>,
     state: CoroState,
-    _phantom: PhantomData<&'a ()>,
 }
 
-impl<'a> ParOr<'a> {
-    pub(crate) fn new(
-        fib: &'a Fib,
-        coroutines: Vec<Pin<Box<(dyn Future<Output = ()> + 'static + Send + Sync)>>>,
-    ) -> Self {
+impl ParOr {
+    pub(crate) fn new(context: ParamContext) -> Self {
         ParOr {
-            fib,
-            coroutines,
+            context,
+            coroutines: vec![],
             state: CoroState::Running,
-            _phantom: PhantomData,
         }
+    }
+
+    /// Add a new coroutine to this [`ParOr`].
+    pub fn with<C, Marker>(mut self, coro: C) -> Self
+    where
+        C: UninitCoroutine<Marker>,
+    {
+        // Safety: We are getting polled right now, therefore we have exclusive world access.
+        unsafe {
+            if let Some(c) = coro.init(
+                self.context.owner,
+                self.context.world_window.world_cell().world_mut(),
+            ) {
+                self.coroutines.push(SyncCell::new(Box::pin(c)));
+            }
+        }
+        self
     }
 }
 
-impl<'a> Future for ParOr<'a> {
+impl Future for ParOr {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Self::Output> {
@@ -42,36 +57,12 @@ impl<'a> Future for ParOr<'a> {
             }
             CoroState::Running => {
                 self.state = CoroState::Halted;
-                // TODO: Will care about performance later, maybe find a way to inline the coroutines
-                // instead of allocating them on the heap ?
-                let temp: Vec<Pin<Box<dyn Future<Output = ()> + Send + Sync>>> =
-                    self.coroutines.drain(..).collect();
-                self.fib
-                    .yield_sender
-                    .send(WaitingReason::ParOr { coroutines: temp });
+                let coroutines = std::mem::take(&mut self.coroutines);
+                self.context
+                    .yield_channel
+                    .send(WaitingReason::ParOr { coroutines });
                 Poll::Pending
             }
         }
-    }
-}
-
-impl<'a> ParOr<'a> {
-    /// Add a new coroutine to this [`ParOr`]. It will have a lower priority than those defined
-    /// above.
-    pub fn with<C, F>(&mut self, closure: C) -> &mut Self
-    where
-        F: Future<Output = ()> + 'static + Send + Sync,
-        C: FnOnce(Fib) -> F,
-    {
-        let fib = self.fib.clone();
-        let fut = Box::pin(closure(fib));
-        self.coroutines.push(fut);
-        self
-    }
-}
-
-impl<'cx> PrimitiveVoid<'cx> for ParOr<'cx> {
-    fn get_context(&self) -> &Fib {
-        self.fib
     }
 }

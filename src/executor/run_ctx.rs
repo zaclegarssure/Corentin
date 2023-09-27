@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use bevy::{ecs::component::ComponentId, prelude::Entity, utils::HashMap};
 use tinyset::SetUsize;
 
@@ -19,14 +17,6 @@ impl<T> WriteTable<T> {
 
     pub(crate) fn insert(&mut self, location: (Entity, ComponentId), writer: T) -> Option<T> {
         self.table.insert(location, writer)
-    }
-
-    /// Return all conflicters
-    pub(crate) fn conflicts<I>(&self, vals: I) -> impl Iterator<Item = &'_ T>
-    where
-        I: IntoIterator<Item = (Entity, ComponentId)>,
-    {
-        vals.into_iter().filter_map(|k| self.table.get(&k))
     }
 }
 
@@ -52,8 +42,8 @@ impl ParentTable {
     }
 
     /// Return true if (and only if) `parent` is a parent of `child`.
-    /// It is useful to know if a write perform in a can
-    /// be reacted by b, which is the case if this returns
+    /// It is useful to know if a write performed by coroutine A can
+    /// be observed by coroutine B, which is the case if this returns
     /// false.
     pub(crate) fn is_parent(&self, parent: usize, child: usize) -> bool {
         self.table.get(child).unwrap().contains(parent)
@@ -67,21 +57,9 @@ impl ParentTable {
     }
 }
 
-pub(crate) struct SuspendedCoro {
-    pub(crate) coro_id: CoroId,
-    pub(crate) node: usize,
-}
-
-impl SuspendedCoro {
-    pub(crate) fn new(coro_id: CoroId, node: usize) -> Self {
-        Self { coro_id, node }
-    }
-}
-
 pub(crate) struct RunContext {
     pub(crate) write_table: WriteTable<usize>,
     pub(crate) parent_table: ParentTable,
-    pub(crate) delayed: VecDeque<SuspendedCoro>,
     pub(crate) current_node_map: HashMap<CoroId, usize>,
 }
 
@@ -90,7 +68,6 @@ impl RunContext {
         RunContext {
             write_table: WriteTable::new(),
             parent_table: ParentTable::new(),
-            delayed: VecDeque::new(),
             current_node_map: HashMap::new(),
         }
     }

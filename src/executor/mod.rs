@@ -1,44 +1,33 @@
 use bevy::utils::HashMap;
 use bevy::{ecs::component::ComponentId, prelude::*};
-use core::task::Context;
-use coroutine::{Fib, WaitingReason};
-use std::cell::Cell;
+use coroutine::WaitingReason;
 use std::collections::VecDeque;
-use std::future::Future;
-use std::pin::Pin;
-use std::rc::Rc;
-use std::task::Poll;
-use waker::create;
 
-use crate::{coroutine, waker};
-use coroutine::grab::GrabReason;
-use msg_channel::Receiver;
+use crate::coroutine;
+use crate::coroutine::observable::ObservableId;
+use crate::coroutine::{CoroObject, CoroWrites, Coroutine, CoroutineResult};
 
-pub(crate) type CoroObject = Pin<Box<dyn Future<Output = ()> + Send + Sync>>;
-
-pub(crate) mod msg_channel;
 mod run_ctx;
-use run_ctx::RunContext;
-
-use self::run_ctx::SuspendedCoro;
+pub(crate) use run_ctx::RunContext;
 
 type CoroId = u32;
 
 #[derive(Resource)]
 pub struct Executor {
     coroutines: HashMap<CoroId, CoroObject>,
-    yield_msg: Receiver<WaitingReason>,
-    grab_msg: Receiver<GrabReason>,
     waiting_on_tick: VecDeque<CoroId>,
     waiting_on_duration: VecDeque<(Timer, CoroId)>,
     waiting_on_change: HashMap<(Entity, ComponentId), Vec<CoroId>>,
     waiting_on_par_or: HashMap<CoroId, Vec<CoroId>>,
     waiting_on_par_and: HashMap<CoroId, Vec<CoroId>>,
     is_awaited_by: HashMap<CoroId, CoroId>,
-    own: HashMap<Entity, Vec<CoroId>>,
-    world_window: Rc<Cell<Option<*mut World>>>,
-    accesses: HashMap<CoroId, GrabReason>,
     next_id: CoroId,
+}
+
+impl Default for Executor {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // SAFETY: This is safe because the only !Send and !Sync field (receiver) is only accessed
@@ -46,25 +35,16 @@ pub struct Executor {
 unsafe impl Send for Executor {}
 unsafe impl Sync for Executor {}
 
-const ERR_WRONGAWAIT: &str = "A coroutine yielded without notifying the executor
-the reason. That is most likely because it awaits a
-future which is not part of this library.";
-
 impl Executor {
     pub fn new() -> Self {
         Executor {
             coroutines: HashMap::new(),
-            yield_msg: Receiver::new(),
-            grab_msg: Receiver::new(),
             waiting_on_tick: VecDeque::new(),
             waiting_on_duration: VecDeque::new(),
             waiting_on_change: HashMap::new(),
             waiting_on_par_or: HashMap::new(),
             waiting_on_par_and: HashMap::new(),
             is_awaited_by: HashMap::new(),
-            own: HashMap::new(),
-            world_window: Rc::new(Cell::new(None)),
-            accesses: HashMap::new(),
             next_id: 0,
         }
     }
@@ -77,39 +57,10 @@ impl Executor {
     }
 
     /// Add a coroutine to the executor.
-    pub fn add<C, F>(&mut self, closure: C)
-    where
-        F: Future<Output = ()> + 'static + Send + Sync,
-        C: FnOnce(Fib) -> F,
-    {
-        let fib = Fib {
-            yield_sender: self.yield_msg.sender(),
-            grab_sender: self.grab_msg.sender(),
-            owner: None,
-            world_window: Rc::clone(&self.world_window),
-        };
+    pub fn add(&mut self, coroutine: CoroObject) {
         let id = self.next_id();
-        self.coroutines.insert(id, Box::pin(closure(fib)));
+        self.coroutines.insert(id, coroutine);
         self.waiting_on_tick.push_back(id);
-    }
-
-    /// Add a coroutine owned by an [`Entity`] to the executor.
-    /// If the entity is removed, the coroutine is dropped.
-    pub fn add_to_entity<C, F>(&mut self, entity: Entity, closure: C)
-    where
-        F: Future<Output = ()> + 'static + Send + Sync,
-        C: FnOnce(Fib, Entity) -> F,
-    {
-        let fib = Fib {
-            yield_sender: self.yield_msg.sender(),
-            grab_sender: self.grab_msg.sender(),
-            owner: None,
-            world_window: Rc::clone(&self.world_window),
-        };
-        let id = self.next_id();
-        self.coroutines.insert(id, Box::pin(closure(fib, entity)));
-        self.waiting_on_tick.push_back(id);
-        self.own.entry(entity).or_default().push(id);
     }
 
     /// Drop a coroutine from the executor.
@@ -161,7 +112,6 @@ impl Executor {
             self.waiting_on_change.retain(|(e, c), coro| {
                 if let Some(e) = w.get_entity(*e) {
                     if let Some(t) = e.get_change_ticks_by_id(*c) {
-                        // TODO: Make sure this is correct, I'm really not that confident, even though it works with a simple example
                         if t.is_changed(w.last_change_tick(), w.change_tick()) {
                             for c in coro {
                                 root_coros.push_back(*c);
@@ -180,107 +130,63 @@ impl Executor {
             }
         });
 
-        let mut run_cx: RunContext = RunContext::new();
-        let waker = create();
-        let mut context = Context::from_waker(&waker);
+        let mut run_cx = RunContext::new();
+        let mut ready_coro: VecDeque<(CoroId, usize)> = root_coros
+            .into_iter()
+            .map(|c_id| (c_id, run_cx.parent_table.add_root()))
+            .collect();
 
-        // TODO: Find maybe a safer abstraction ?
-        self.world_window.replace(Some(world as *mut _));
-
-        while let Some(coro) = root_coros.pop_front() {
-            let node = run_cx.parent_table.add_root();
-            self.run(coro, node, false, &mut run_cx, &mut context);
-        }
-
-        while let Some(SuspendedCoro { coro_id, node }) = run_cx.delayed.pop_front() {
-            self.run(coro_id, node, true, &mut run_cx, &mut context);
+        while let Some((c_id, node)) = ready_coro.pop_front() {
+            self.run(c_id, node, &mut run_cx, &mut ready_coro, world);
         }
     }
 
     /// Run a specific coroutine and it's children.
     fn run(
         &mut self,
-        coro: CoroId,
+        coro_id: CoroId,
         this_node: usize,
-        resumed: bool,
         run_cx: &mut RunContext,
-        cx: &mut Context,
+        ready_coro: &mut VecDeque<(CoroId, usize)>,
+        world: &mut World,
     ) {
-        if !self.coroutines.contains_key(&coro) {
+        if !self.coroutines.contains_key(&coro_id) {
             return;
         }
 
-        let accesses = self.accesses.get(&coro);
-        if let Some(accesses) = accesses {
+        let coro = self.coroutines.get_mut(&coro_id).unwrap().get();
+        if !coro.as_mut().is_valid(world) {
+            self.cancel(coro_id);
+            return;
+        }
+
+        let result = Coroutine::resume(coro.as_mut(), world);
+
+        let mut writes = world.resource_mut::<CoroWrites>();
+
+        while let Some((to_entity, component)) = writes.0.pop_front() {
+            if let Some(prev_writer) = run_cx.write_table.insert((to_entity, component), this_node)
             {
-                let world = unsafe { &mut *self.world_window.get().unwrap() };
-                if !accesses.is_valid(world) {
-                    self.cancel(coro);
-                    return;
-                }
+                run_cx.parent_table.add_parent(prev_writer, this_node);
             }
-
-            let mut has_conflicts = false;
-            let conflicters = run_cx.write_table.conflicts(accesses.writes());
-            for c in conflicters {
-                if !resumed || !run_cx.parent_table.is_parent(*c, this_node) {
-                    run_cx.parent_table.add_parent(*c, this_node);
-                    has_conflicts = true;
-                }
-            }
-
-            if has_conflicts {
-                run_cx
-                    .delayed
-                    .push_back(SuspendedCoro::new(coro, this_node));
-
-                return;
-            }
-        }
-        // To make sure we can detect changes that just happened
-        {
-            let world = unsafe { &mut *self.world_window.get().unwrap() };
-            world.increment_change_tick();
-        }
-
-        let result = self.coroutines.get_mut(&coro).unwrap().as_mut().poll(cx);
-        let yield_msg = self.yield_msg.receive();
-        let next_access = self.grab_msg.receive();
-
-        if let Some(accesses) = accesses {
-            // SAFETY: No other coroutines a running right now, we have exclusive world access
-            let world = unsafe { &mut *self.world_window.get().unwrap() };
-            // TODO: Should probably find a better way
-            for write in accesses.writes().iter().filter(|(e, cid)| {
-                let tick = match world.get_entity(*e).unwrap().get_change_ticks_by_id(*cid) {
-                    Some(t) => t,
-                    None => {
-                        // The access was valid so that must be an optional field
-                        return false;
-                    }
-                };
-                tick.last_changed_tick() == world.change_tick()
-            }) {
-                run_cx.write_table.insert(*write, this_node);
-                if let Some(nexts) = self.waiting_on_change.remove(write) {
-                    for c in nexts {
-                        let node = match run_cx.current_node_map.remove(&c) {
-                            Some(n) => {
-                                run_cx.parent_table.add_parent(this_node, n);
-                                n
-                            }
-                            None => run_cx.parent_table.add_child(this_node),
-                        };
-                        self.run(c, node, false, run_cx, cx);
-                    }
+            if let Some(nexts) = self.waiting_on_change.remove(&(to_entity, component)) {
+                for c in nexts {
+                    let node = match run_cx.current_node_map.remove(&c) {
+                        Some(n) => {
+                            run_cx.parent_table.add_parent(this_node, n);
+                            n
+                        }
+                        None => run_cx.parent_table.add_child(this_node),
+                    };
+                    ready_coro.push_back((c, node));
                 }
             }
         }
 
         match result {
-            Poll::Ready(_) => {
-                self.coroutines.remove(&coro);
-                if let Some(parent) = self.is_awaited_by.remove(&coro) {
+            CoroutineResult::Done(_) => {
+                self.coroutines.remove(&coro_id);
+                if let Some(parent) = self.is_awaited_by.remove(&coro_id) {
                     if let Some(others) = self.waiting_on_par_or.remove(&parent) {
                         // coro is the "winner", all the others are cancelled
                         for o in others {
@@ -291,7 +197,7 @@ impl Executor {
                         self.waiting_on_tick.push_back(parent);
                     }
                     if let Some(others) = self.waiting_on_par_and.get_mut(&parent) {
-                        let index = others.iter().position(|c| *c == coro).unwrap();
+                        let index = others.iter().position(|c| *c == coro_id).unwrap();
                         others.remove(index);
                         if others.is_empty() {
                             // TODO: should run immediatly
@@ -301,75 +207,74 @@ impl Executor {
                     }
                 }
             }
-            Poll::Pending => {
-                if let Some(grab) = next_access {
-                    self.accesses.insert(coro, grab);
-                }
-                match yield_msg.expect(ERR_WRONGAWAIT) {
-                    WaitingReason::Tick => self.waiting_on_tick.push_back(coro),
-                    WaitingReason::Duration(d) => self.waiting_on_duration.push_back((d, coro)),
-                    WaitingReason::Changed { from, component } => {
+            CoroutineResult::Yield(yield_msg) => match yield_msg {
+                WaitingReason::Tick => self.waiting_on_tick.push_back(coro_id),
+                WaitingReason::Duration(d) => self.waiting_on_duration.push_back((d, coro_id)),
+                WaitingReason::Changed(change_id) => match change_id {
+                    ObservableId::Component(from, component) => {
                         let next_node = run_cx.parent_table.add_child(this_node);
                         match run_cx.can_execute_now(next_node, &(from, component)) {
                             Some(writer) => {
                                 run_cx.parent_table.add_parent(writer, next_node);
-                                self.run(coro, next_node, false, run_cx, cx);
+                                ready_coro.push_back((coro_id, next_node));
                             }
                             None => {
                                 self.waiting_on_change
                                     .entry((from, component))
                                     .or_default()
-                                    .push(coro);
-                                run_cx.current_node_map.insert(coro, next_node);
+                                    .push(coro_id);
+                                run_cx.current_node_map.insert(coro_id, next_node);
                             }
                         }
                     }
-                    WaitingReason::ParOr { coroutines } => {
-                        let parent = coro;
-                        let mut all_ids = Vec::with_capacity(coroutines.len());
-                        for coroutine in coroutines {
-                            let id = self.next_id();
-                            self.coroutines.insert(id, coroutine);
-                            self.is_awaited_by.insert(id, parent);
-                            all_ids.push(id);
-                        }
-
-                        self.waiting_on_par_or.insert(parent, all_ids.clone());
-
-                        for id in all_ids {
-                            let node = run_cx.parent_table.add_child(this_node);
-                            self.run(id, node, false, run_cx, cx);
-                        }
+                    _ => todo!(),
+                },
+                WaitingReason::ParOr { coroutines } => {
+                    let parent = coro_id;
+                    let mut all_ids = Vec::with_capacity(coroutines.len());
+                    for coroutine in coroutines {
+                        let id = self.next_id();
+                        self.coroutines.insert(id, coroutine);
+                        self.is_awaited_by.insert(id, parent);
+                        all_ids.push(id);
                     }
-                    WaitingReason::ParAnd { coroutines } => {
-                        let parent = coro;
-                        let mut all_ids = Vec::with_capacity(coroutines.len());
-                        for coroutine in coroutines {
-                            let id = self.next_id();
-                            self.coroutines.insert(id, coroutine);
-                            self.is_awaited_by.insert(id, parent);
-                            all_ids.push(id);
-                        }
 
-                        self.waiting_on_par_and.insert(parent, all_ids.clone());
+                    self.waiting_on_par_or.insert(parent, all_ids.clone());
 
-                        for id in all_ids {
-                            let node = run_cx.parent_table.add_child(this_node);
-                            self.run(id, node, false, run_cx, cx);
-                        }
+                    for id in all_ids {
+                        let node = run_cx.parent_table.add_child(this_node);
+                        ready_coro.push_back((id, node));
                     }
                 }
-            }
+                WaitingReason::ParAnd { coroutines } => {
+                    let parent = coro_id;
+                    let mut all_ids = Vec::with_capacity(coroutines.len());
+                    for coroutine in coroutines {
+                        let id = self.next_id();
+                        self.coroutines.insert(id, coroutine);
+                        self.is_awaited_by.insert(id, parent);
+                        all_ids.push(id);
+                    }
+
+                    self.waiting_on_par_and.insert(parent, all_ids.clone());
+
+                    for id in all_ids {
+                        let node = run_cx.parent_table.add_child(this_node);
+                        ready_coro.push_back((id, node));
+                    }
+                }
+            },
         };
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::coroutine::Primitive;
+    use crate::{coroutine::CoroWrites, prelude::*};
 
     use super::Executor;
     use bevy::{
+        ecs::system::EntityCommand,
         prelude::{Component, Mut, World},
         time::Time,
     };
@@ -384,31 +289,35 @@ mod tests {
     #[test]
     fn par_or_despawn_correctly() {
         let mut world = World::new();
-        world.insert_resource(Executor::new());
+        let e = world.spawn_empty().id();
+        world.init_resource::<Executor>();
+        world.init_resource::<CoroWrites>();
         world.insert_resource(Time::new(Instant::now()));
-        world.resource_scope(|w, mut executor: Mut<Executor>| {
-            executor.add(move |mut fib| async move {
-                fib.par_or(|mut fib| async move {
-                    fib.par_or(|mut fib| async move {
-                        loop {
-                            fib.next_tick().await;
-                        }
-                    })
-                    .with(|mut fib| async move {
-                        loop {
-                            fib.next_tick().await;
-                        }
-                    })
-                    .await;
+
+        coroutine(|fib: Fib| async move {
+            fib.par_or(|fib: Fib| async move {
+                fib.par_or(|fib: Fib| async move {
+                    loop {
+                        fib.next_tick().await;
+                    }
                 })
-                .with(|mut fib| async move {
-                    for _ in 0..4 {
+                .with(|fib: Fib| async move {
+                    loop {
                         fib.next_tick().await;
                     }
                 })
                 .await;
-            });
+            })
+            .with(|fib: Fib| async move {
+                for _ in 0..4 {
+                    fib.next_tick().await;
+                }
+            })
+            .await;
+        })
+        .apply(e, &mut world);
 
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
             assert_eq!(executor.is_awaited_by.len(), 0);
             assert_eq!(executor.waiting_on_par_or.len(), 0);
             assert_eq!(executor.coroutines.len(), 1);
@@ -432,21 +341,26 @@ mod tests {
     #[test]
     fn waiting_on_change_cancel_when_components_not_present() {
         let mut world = World::new();
-        world.insert_resource(Executor::new());
+        world.init_resource::<Executor>();
+        world.init_resource::<CoroWrites>();
         world.insert_resource(Time::new(Instant::now()));
         let e = world.spawn((ExampleComponent, ExampleComponentBar)).id();
-        world.resource_scope(|w, mut executor: Mut<Executor>| {
-            executor.add(|mut fib| async move {
-                loop {
-                    let _ex = fib.next_tick().then_grab::<&ExampleComponent>(e).await;
-                }
-            });
-            executor.add(|mut fib| async move {
-                loop {
-                    let _ex = fib.next_tick().then_grab::<&ExampleComponentBar>(e).await;
-                }
-            });
 
+        coroutine(|fib: Fib, _ex: Rd<ExampleComponent>| async move {
+            loop {
+                fib.next_tick().await;
+            }
+        })
+        .apply(e, &mut world);
+
+        coroutine(|fib: Fib, _ex: Rd<ExampleComponentBar>| async move {
+            loop {
+                fib.next_tick().await;
+            }
+        })
+        .apply(e, &mut world);
+
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
             assert_eq!(executor.coroutines.len(), 2);
             executor.tick(w);
             assert_eq!(executor.coroutines.len(), 2);
@@ -462,19 +376,17 @@ mod tests {
     #[test]
     fn waiting_on_change_dont_cancel_on_optional() {
         let mut world = World::new();
-        world.insert_resource(Executor::new());
+        world.init_resource::<Executor>();
+        world.init_resource::<CoroWrites>();
         world.insert_resource(Time::new(Instant::now()));
         let e = world.spawn(ExampleComponent).id();
+        coroutine(|fib: Fib, _ex: Opt<Rd<ExampleComponent>>| async move {
+            loop {
+                fib.next_tick().await;
+            }
+        })
+        .apply(e, &mut world);
         world.resource_scope(|w, mut executor: Mut<Executor>| {
-            executor.add(|mut fib| async move {
-                loop {
-                    let _ex = fib
-                        .next_tick()
-                        .then_grab::<Option<&ExampleComponent>>(e)
-                        .await;
-                }
-            });
-
             assert_eq!(executor.coroutines.len(), 1);
             executor.tick(w);
             assert_eq!(executor.coroutines.len(), 1);
@@ -482,11 +394,5 @@ mod tests {
             executor.tick(w);
             assert_eq!(executor.coroutines.len(), 1);
         });
-    }
-}
-
-impl Default for Executor {
-    fn default() -> Self {
-        Self::new()
     }
 }

@@ -1,36 +1,33 @@
-use crate::coroutine::{CoroState, Fib, WaitingReason};
+use crate::coroutine::WaitingReason;
 
 use bevy::time::Time;
 use bevy::time::Timer;
 use bevy::time::TimerMode;
 use std::future::Future;
-use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
 
-use super::Primitive;
-use super::PrimitiveVoid;
+use super::coro_param::ParamContext;
+use super::CoroState;
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct NextTick<'a> {
-    fib: &'a Fib,
+pub struct NextTick {
+    context: ParamContext,
     state: CoroState,
-    _phantom: PhantomData<&'a ()>,
 }
 
-impl<'a> NextTick<'a> {
-    pub(crate) fn new(fib: &'a Fib) -> Self {
+impl NextTick {
+    pub(crate) fn new(context: ParamContext) -> Self {
         NextTick {
-            fib,
+            context,
             state: CoroState::Running,
-            _phantom: PhantomData,
         }
     }
 }
 
-impl<'a> Future for NextTick<'a> {
+impl Future for NextTick {
     type Output = Duration;
 
     fn poll(mut self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Self::Output> {
@@ -41,47 +38,40 @@ impl<'a> Future for NextTick<'a> {
 
                 // SAFETY: None lmao
                 let dt = unsafe {
-                    (*self.fib.world_window.get().unwrap())
-                        .resource::<Time>()
+                    (self.context.world_window.world_cell())
+                        .get_resource::<Time>()
+                        .unwrap()
                         .delta()
                 };
                 Poll::Ready(dt)
             }
             CoroState::Running => {
                 self.state = CoroState::Halted;
-                self.fib.yield_sender.send(WaitingReason::Tick);
+                self.context.yield_channel.send(WaitingReason::Tick);
                 Poll::Pending
             }
         }
     }
 }
 
-impl<'cx> Primitive<'cx, Duration> for NextTick<'cx> {
-    fn get_context(&self) -> &Fib {
-        self.fib
-    }
-}
-
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct DurationFuture<'a> {
-    fib: &'a Fib,
+pub struct DurationFuture {
+    context: ParamContext,
     duration: Duration,
     state: CoroState,
-    _phantom: PhantomData<&'a ()>,
 }
 
-impl<'a> DurationFuture<'a> {
-    pub(crate) fn new(fib: &'a Fib, duration: Duration) -> Self {
+impl DurationFuture {
+    pub(crate) fn new(context: ParamContext, duration: Duration) -> Self {
         DurationFuture {
-            fib,
+            context,
             duration,
             state: CoroState::Running,
-            _phantom: PhantomData,
         }
     }
 }
 
-impl<'a> Future for DurationFuture<'a> {
+impl Future for DurationFuture {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Self::Output> {
@@ -93,8 +83,8 @@ impl<'a> Future for DurationFuture<'a> {
             }
             CoroState::Running => {
                 self.state = CoroState::Halted;
-                self.fib
-                    .yield_sender
+                self.context
+                    .yield_channel
                     .send(WaitingReason::Duration(Timer::new(
                         self.duration,
                         TimerMode::Once,
@@ -102,11 +92,5 @@ impl<'a> Future for DurationFuture<'a> {
                 Poll::Pending
             }
         }
-    }
-}
-
-impl<'cx> PrimitiveVoid<'cx> for DurationFuture<'cx> {
-    fn get_context(&self) -> &Fib {
-        self.fib
     }
 }
