@@ -25,30 +25,21 @@ for Bevy. Those would be useful for scripting like logic, chain of actions over 
 Most features are not implemented yet and those that are available are pretty slow (and probably buggy as well).
 
 # Overview
+* Define coroutines as async functions, that can be added to any entity.
+* Coroutines can yield and be resumed after a certain condition:
+  This includes, waiting for some time, waiting until a component is mutated and so on.
+* Coroutines are structured: they can spawn sub-coroutines, and wait until all of them
+  terminates (`par_and`) or until one of them terminates (`par_or`). This also includes
+  automatic cancellation.
 
-## What's already done ?
- * Spawning coroutines in the world, or owned by an entity.
- * Waiting for a certain amount of time.
- * Waiting for the next tick.
- * Waiting that a component from an entity change.
- * Spawning multiple coroutine and waiting for the first one to finish (`ParOr`).
- * Spawning multiple coroutine and waiting for all of them to finish (`ParAnd`).
- * Getting immutable access to specific components from an entity.
- * Getting mutable access to specific components from an entity.
+# Example
+TODO
 
-## What will be soon available from coroutines
- * Getting access to specific resources.
- * Being able to run commands.
- * "Binding" a coroutine to some components of an entity, so that those can be conveniently accessed in the entire coroutine.
-
-## What will be done way later
- * Optimize all of that, in particular to reduce heap allocations of coroutines.
- * The possibility to run arbitrary queries from a coroutine.
- * Higher level construct and macros to make everything simpler to write.
- * A multithreaded runtime (no idea how I will make that one work)
- * A way to serialize and deserialize coroutine state.
-
-TODO: add examples of what is currently possible, and what api will be available later on as well.
+# Features to implement soon
+ * Reading, writing and reacting to regular bevy events.
+ * Using `Commands` to queue structural mutations and await them.
+ * Other form of structured operations.
+ * Exclusive coroutines, that can access the whole World
 
 # Contributions
 It's a bit early to accept contributions right now, but if you're interested, don't hesitate to play around with this crate and share your ideas.
