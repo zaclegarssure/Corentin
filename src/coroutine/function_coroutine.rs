@@ -155,7 +155,7 @@ impl Fib {
     }
 
     ///// Returns a coroutine that resolve once all of the underlying coroutine finishes.
-    pub fn par_and<C, Marker>(&mut self, coro: C) -> ParAnd<'_>
+    pub fn par_and<C, Marker>(&self, coro: C) -> ParAnd<'_>
     where
         C: UninitCoroutine<Marker>,
     {

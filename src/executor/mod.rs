@@ -164,9 +164,12 @@ impl Executor {
 
         let mut writes = world.resource_mut::<CoroWrites>();
 
-        while let Some((write, c_id)) = writes.0.pop_front() {
-            run_cx.write_table.insert((write, c_id), this_node);
-            if let Some(nexts) = self.waiting_on_change.remove(&(write, c_id)) {
+        while let Some((to_entity, component)) = writes.0.pop_front() {
+            if let Some(prev_writer) = run_cx.write_table.insert((to_entity, component), this_node)
+            {
+                run_cx.parent_table.add_parent(prev_writer, this_node);
+            }
+            if let Some(nexts) = self.waiting_on_change.remove(&(to_entity, component)) {
                 for c in nexts {
                     let node = match run_cx.current_node_map.remove(&c) {
                         Some(n) => {
@@ -370,28 +373,26 @@ mod tests {
         });
     }
 
-    //#[test]
-    //fn waiting_on_change_dont_cancel_on_optional() {
-    //    let mut world = World::new();
-    //    world.init_resource::<Executor>();
-    //    world.init_resource::<CoroWrites>();
-    //    world.insert_resource(Time::new(Instant::now()));
-    //    let e = world.spawn(ExampleComponent).id();
-    //    coroutine(
-    //        |mut fib: Fib, _ex: Option<R<ExampleComponent>>| async move {
-    //            loop {
-    //                fib.next_tick().await;
-    //            }
-    //        },
-    //    )
-    //    .apply(e, &mut world);
-    //    world.resource_scope(|w, mut executor: Mut<Executor>| {
-    //        assert_eq!(executor.coroutines.len(), 1);
-    //        executor.tick(w);
-    //        assert_eq!(executor.coroutines.len(), 1);
-    //        w.entity_mut(e).remove::<ExampleComponent>();
-    //        executor.tick(w);
-    //        assert_eq!(executor.coroutines.len(), 1);
-    //    });
-    //}
+    #[test]
+    fn waiting_on_change_dont_cancel_on_optional() {
+        let mut world = World::new();
+        world.init_resource::<Executor>();
+        world.init_resource::<CoroWrites>();
+        world.insert_resource(Time::new(Instant::now()));
+        let e = world.spawn(ExampleComponent).id();
+        coroutine(|fib: Fib, _ex: Opt<Rd<ExampleComponent>>| async move {
+            loop {
+                fib.next_tick().await;
+            }
+        })
+        .apply(e, &mut world);
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
+            assert_eq!(executor.coroutines.len(), 1);
+            executor.tick(w);
+            assert_eq!(executor.coroutines.len(), 1);
+            w.entity_mut(e).remove::<ExampleComponent>();
+            executor.tick(w);
+            assert_eq!(executor.coroutines.len(), 1);
+        });
+    }
 }
