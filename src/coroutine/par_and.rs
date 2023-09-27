@@ -41,6 +41,7 @@ impl<'a> Future for ParAnd<'a> {
                 self.state = CoroState::Halted;
                 let coroutines = std::mem::take(&mut self.coroutines);
                 self.fib
+                    .context
                     .yield_channel
                     .send(WaitingReason::ParAnd { coroutines });
                 Poll::Pending
@@ -58,8 +59,8 @@ impl<'a> ParAnd<'a> {
         // Safety: We are getting polled right now, therefore we have exclusive world access.
         unsafe {
             if let Some(c) = coro.init(
-                self.fib.meta.owner,
-                self.fib.world_window.world_cell().world_mut(),
+                self.fib.context.owner,
+                self.fib.context.world_window.world_cell().world_mut(),
             ) {
                 self.coroutines.push(SyncCell::new(Box::pin(c)));
             }

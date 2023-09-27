@@ -38,7 +38,7 @@ impl<'a> Future for NextTick<'a> {
 
                 // SAFETY: None lmao
                 let dt = unsafe {
-                    (self.fib.world_window.world_cell())
+                    (self.fib.context.world_window.world_cell())
                         .get_resource::<Time>()
                         .unwrap()
                         .delta()
@@ -47,7 +47,7 @@ impl<'a> Future for NextTick<'a> {
             }
             CoroState::Running => {
                 self.state = CoroState::Halted;
-                self.fib.yield_channel.send(WaitingReason::Tick);
+                self.fib.context.yield_channel.send(WaitingReason::Tick);
                 Poll::Pending
             }
         }
@@ -84,6 +84,7 @@ impl<'a> Future for DurationFuture<'a> {
             CoroState::Running => {
                 self.state = CoroState::Halted;
                 self.fib
+                    .context
                     .yield_channel
                     .send(WaitingReason::Duration(Timer::new(
                         self.duration,

@@ -47,7 +47,7 @@ impl<'a> Future for OnChange<'a> {
             CoroState::Running => {
                 self.state = CoroState::Halted;
                 self.context
-                    .yield_sender
+                    .yield_channel
                     .send(WaitingReason::Changed(self.id));
                 Poll::Pending
             }

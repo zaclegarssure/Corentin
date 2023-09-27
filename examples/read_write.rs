@@ -1,22 +1,11 @@
-//use std::time::Duration;
-//
-//use bevy::ecs::system::EntityCommand;
-//use bevy::prelude::*;
-//use corentin::{
-//    coroutine::coro_param::{R, W},
-//    prelude::*,
-//};
-//
-//#[derive(Component)]
-//struct IsClicked(u32);
-//
-//fn main() {
-//    App::new()
-//        .add_plugins((DefaultPlugins, CorentinPlugin))
-//        .add_systems(Startup, setup_access)
-//        .run();
-//}
-//
+
+fn main() {
+    //App::new()
+    //    .add_plugins((DefaultPlugins, CorentinPlugin))
+    //    .add_systems(Startup, setup_access)
+    //    .run();
+}
+
 //fn setup_scene(
 //    mut meshes: ResMut<Assets<Mesh>>,
 //    mut materials: ResMut<Assets<ColorMaterial>>,

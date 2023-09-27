@@ -1,5 +1,4 @@
 use std::time::Duration;
-use std::{cell::Cell, rc::Rc};
 
 use bevy::prelude::Entity;
 use bevy::prelude::World;
@@ -11,13 +10,9 @@ use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
-use crate::coroutine::CoroMeta;
-use crate::executor::msg_channel::Receiver;
-use crate::executor::msg_channel::Sender;
-
-use super::coro_param::CoroParam;
 use super::coro_param::ParamContext;
 use super::coro_param::WorldWindow;
+use super::coro_param::{CoroAccess, CoroParam, YieldChannel};
 use super::duration::DurationFuture;
 use super::duration::NextTick;
 use super::par_and::ParAnd;
@@ -32,9 +27,9 @@ where
 {
     #[pin]
     future: F::Future,
-    yield_channel: Receiver<WaitingReason>,
-    world_window: Rc<Cell<*mut World>>,
-    meta: CoroMeta,
+    yield_channel: YieldChannel,
+    world_window: WorldWindow,
+    owner: Entity,
 }
 
 unsafe impl<Marker, F> Send for FunctionCoroutine<Marker, F> where F: CoroutineParamFunction<Marker> {}
@@ -53,9 +48,8 @@ where
         let mut cx = Context::from_waker(&waker);
 
         let this = self.project();
-        this.world_window.replace(world as *mut _);
-        let res = this.future.poll(&mut cx);
-        this.world_window.replace(std::ptr::null_mut());
+        let res = this.world_window.scope(world, || this.future.poll(&mut cx));
+
         match res {
             Poll::Ready(_) => CoroutineResult::Done(()),
             Poll::Pending => {
@@ -65,8 +59,8 @@ where
     }
 
     fn is_valid(self: Pin<&mut Self>, world: &World) -> bool {
-        //TODO validate the window as well
-        F::Params::is_valid(self.meta.owner, world)
+        //TODO validate the Fib as well
+        F::Params::is_valid(self.owner, world)
     }
 }
 
@@ -84,38 +78,33 @@ where
     type Coroutine = FunctionCoroutine<Marker, F>;
 
     fn init(self, owner: Entity, world: &mut World) -> Option<Self::Coroutine> {
-        let yield_channel = Receiver::default();
-        let world_window = Rc::new(Cell::new(std::ptr::null_mut()));
+        let yield_channel = YieldChannel::new();
+        let world_window = WorldWindow::closed_window();
 
         let context = ParamContext {
             owner,
-            world_window: WorldWindow(Rc::clone(&world_window)),
-            yield_sender: yield_channel.sender(),
+            world_window: world_window.clone(),
+            yield_channel: yield_channel.clone(),
         };
 
-        let mut meta = CoroMeta::new(owner);
+        let mut access = CoroAccess::default();
 
-        let params = F::Params::init(context, world, &mut meta)?;
-        let fib = Fib {
-            world_window: WorldWindow(Rc::clone(&world_window)),
-            yield_channel: yield_channel.sender(),
-            meta: meta.clone(),
-        };
+        let params = F::Params::init(context.clone(), world, &mut access)?;
+        let fib = Fib { context, access };
 
         Some(FunctionCoroutine {
             future: self.init(fib, params),
             yield_channel,
             world_window,
-            meta,
+            owner,
         })
     }
 }
 
 /// The `Fib` is the first param of a coroutine, all yielding is done througth it.
 pub struct Fib {
-    pub(crate) world_window: WorldWindow,
-    pub(crate) yield_channel: Sender<WaitingReason>,
-    pub(crate) meta: CoroMeta,
+    pub(crate) context: ParamContext,
+    pub(crate) access: CoroAccess,
 }
 
 // Safety: No idea....
@@ -150,8 +139,10 @@ impl Fib {
     {
         // Safety: We are getting polled right now, therefore we have exclusive world access.
         unsafe {
-            if let Some(c) = coro.init(self.meta.owner, self.world_window.world_cell().world_mut())
-            {
+            if let Some(c) = coro.init(
+                self.context.owner,
+                self.context.world_window.world_cell().world_mut(),
+            ) {
                 return ParOr::new(self, vec![SyncCell::new(Box::pin(c))]);
             }
         }
@@ -165,8 +156,10 @@ impl Fib {
     {
         // Safety: We are getting polled right now, therefore we have exclusive world access.
         unsafe {
-            if let Some(c) = coro.init(self.meta.owner, self.world_window.world_cell().world_mut())
-            {
+            if let Some(c) = coro.init(
+                self.context.owner,
+                self.context.world_window.world_cell().world_mut(),
+            ) {
                 return ParAnd::new(self, vec![SyncCell::new(Box::pin(c))]);
             }
         }

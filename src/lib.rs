@@ -6,13 +6,12 @@ pub mod executor;
 
 mod commands;
 mod plugin;
-mod world_window;
 
 pub mod prelude {
     #[doc(hidden)]
     pub use crate::commands::{coroutine, AddCoroutine};
     #[doc(hidden)]
-    pub use crate::coroutine::coro_param::{R, W};
+    pub use crate::coroutine::coro_param::{Rd, Wr};
     #[doc(hidden)]
     pub use crate::coroutine::function_coroutine::Fib;
     #[doc(hidden)]
@@ -111,7 +110,7 @@ mod tests {
         let a = Arc::new(Mutex::new(0));
         let b = Arc::clone(&a);
 
-        coroutine(move |fib: Fib, ex: R<ExampleComponent>| async move {
+        coroutine(move |fib: Fib, ex: Rd<ExampleComponent>| async move {
             fib.next_tick().await;
             ex.on_change().await;
             *b.lock().unwrap() += 1;

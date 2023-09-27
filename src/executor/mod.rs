@@ -7,7 +7,6 @@ use crate::coroutine;
 use crate::coroutine::observable::ObservableId;
 use crate::coroutine::{CoroObject, CoroWrites, Coroutine, CoroutineResult};
 
-pub(crate) mod msg_channel;
 mod run_ctx;
 pub(crate) use run_ctx::RunContext;
 
@@ -344,14 +343,14 @@ mod tests {
         world.insert_resource(Time::new(Instant::now()));
         let e = world.spawn((ExampleComponent, ExampleComponentBar)).id();
 
-        coroutine(|fib: Fib, _ex: R<ExampleComponent>| async move {
+        coroutine(|fib: Fib, _ex: Rd<ExampleComponent>| async move {
             loop {
                 fib.next_tick().await;
             }
         })
         .apply(e, &mut world);
 
-        coroutine(|fib: Fib, _ex: R<ExampleComponentBar>| async move {
+        coroutine(|fib: Fib, _ex: Rd<ExampleComponentBar>| async move {
             loop {
                 fib.next_tick().await;
             }
