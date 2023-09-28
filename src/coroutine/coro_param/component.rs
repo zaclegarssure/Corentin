@@ -1,20 +1,27 @@
 use std::marker::PhantomData;
 
-use bevy::prelude::{Component, Entity, World};
-
-use crate::coroutine::{
-    observable::{ObservableId, OnChange},
-    CoroAccess, CoroWrites, SourceId,
+use bevy::{
+    ecs::component::ComponentId,
+    prelude::{Component, Entity, Mut, World},
 };
 
-use super::{CoroParam, ParamContext, RdGuard, WrGuard};
+use crate::{
+    coroutine::{
+        observable::{ObservableId, OnChange},
+        CoroAccess, CoroWrites, SourceId,
+    },
+    prelude::Fib,
+};
+
+use super::{CoroParam, ParamContext};
 
 /// A readonly reference to a [`Component`] from the owning [`Entity`].
 ///
 /// Note that a Coroutine with such parameter will be canceled if the entity does not have the
 /// relevent component.
 pub struct Rd<T: Component> {
-    context: ParamContext,
+    owner: Entity,
+    id: ComponentId,
     _phantom: PhantomData<T>,
 }
 
@@ -29,7 +36,8 @@ impl<T: Component> CoroParam for Rd<T> {
         }
 
         Some(Self {
-            context,
+            owner: context.owner,
+            id,
             _phantom: PhantomData,
         })
     }
@@ -45,17 +53,14 @@ impl<T: Component> CoroParam for Rd<T> {
 impl<T: Component> Rd<T> {
     /// Return the current value of the [`Component`]. The result ([`InGuard`]) cannot be held
     /// accros any await.
-    pub fn get(&self) -> RdGuard<'_, T> {
+    pub fn get<'a>(&'a self, fib: &'a Fib) -> &'a T {
         unsafe {
-            RdGuard::new(
-                self.context
-                    .world_window
-                    .world_cell()
-                    .get_entity(self.context.owner)
-                    .unwrap()
-                    .get::<T>()
-                    .unwrap(),
-            )
+            fib.world_window
+                .world_cell()
+                .get_entity(self.owner)
+                .unwrap()
+                .get::<T>()
+                .unwrap()
         }
     }
 
@@ -63,16 +68,8 @@ impl<T: Component> Rd<T> {
     ///
     /// Note that it integrates with the regular change detection of Bevy, meaning that the
     /// coroutine will be resumed, if a [`System`] mutates the value.
-    pub fn on_change(&self) -> OnChange<'_> {
-        unsafe {
-            OnChange::new(
-                &self.context,
-                ObservableId::Component(
-                    self.context.owner,
-                    self.context.world_window.component_id::<T>(),
-                ),
-            )
-        }
+    pub fn on_change<'a>(&'a self, fib: &'a mut Fib) -> OnChange<'a> {
+        OnChange::new(fib, ObservableId::Component(self.owner, self.id))
     }
 }
 
@@ -82,7 +79,8 @@ impl<T: Component> Rd<T> {
 /// relevent component.
 pub struct Wr<T: Component> {
     _phantom: PhantomData<T>,
-    context: ParamContext,
+    owner: Entity,
+    id: ComponentId,
 }
 
 impl<T: Component> CoroParam for Wr<T> {
@@ -95,7 +93,8 @@ impl<T: Component> CoroParam for Wr<T> {
 
         Some(Self {
             _phantom: PhantomData,
-            context,
+            id,
+            owner: context.owner,
         })
     }
 
@@ -108,49 +107,35 @@ impl<T: Component> CoroParam for Wr<T> {
 }
 
 impl<T: Component> Wr<T> {
-    pub fn get(&self) -> RdGuard<'_, T> {
+    pub fn get<'a>(&'a self, fib: &'a Fib) -> &'a T {
         let value = unsafe {
-            self.context
-                .world_window
+            fib.world_window
                 .world_cell()
-                .get_entity(self.context.owner)
+                .get_entity(self.owner)
                 .unwrap()
                 .get::<T>()
                 .unwrap()
         };
 
-        RdGuard::new(value)
+        value
     }
 
-    pub fn get_mut(&mut self) -> WrGuard<'_, T> {
+    pub fn get_mut<'a>(&'a mut self, fib: &'a Fib) -> Mut<'a, T> {
         unsafe {
-            let cell = self.context.world_window.world_cell();
-            let c_id = cell.components().component_id::<T>().unwrap();
+            let cell = fib.world_window.world_cell();
             cell.get_resource_mut::<CoroWrites>()
                 .unwrap()
                 .0
                 // TODO fix write
-                .push_back((self.context.owner, c_id));
+                .push_back((self.owner, self.id));
 
-            let value = cell
-                .get_entity(self.context.owner)
-                .unwrap()
-                .get_mut::<T>()
-                .unwrap();
+            let value = cell.get_entity(self.owner).unwrap().get_mut::<T>().unwrap();
 
-            WrGuard::new(value)
+            value
         }
     }
 
-    pub fn on_change(&self) -> OnChange<'_> {
-        unsafe {
-            OnChange::new(
-                &self.context,
-                ObservableId::Component(
-                    self.context.owner,
-                    self.context.world_window.component_id::<T>(),
-                ),
-            )
-        }
+    pub fn on_change<'a>(&'a self, fib: &'a mut Fib) -> OnChange<'a> {
+        OnChange::new(fib, ObservableId::Component(self.owner, self.id))
     }
 }

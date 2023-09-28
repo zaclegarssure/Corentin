@@ -2,28 +2,30 @@ use std::marker::PhantomData;
 
 use bevy::{
     ecs::component::ComponentId,
-    prelude::{self, Resource, World},
+    prelude::{self, Mut, Resource, World},
 };
 
-use crate::coroutine::{
-    observable::{ObservableId, OnChange},
-    SourceId,
+use crate::{
+    coroutine::{
+        observable::{ObservableId, OnChange},
+        SourceId,
+    },
+    prelude::Fib,
 };
 
-use super::{CoroParam, ParamContext, RdGuard, WrGuard};
+use super::{CoroParam, ParamContext};
 
 /// A readonly reference to a [`Resource`] in the [`World`].
 ///
 /// Note that a Coroutine with such parameter will be canceled if the resource is removed.
 pub struct RdRes<R: Resource> {
-    context: ParamContext,
     id: ComponentId,
     _phantom: PhantomData<R>,
 }
 
 impl<R: Resource> CoroParam for RdRes<R> {
     fn init(
-        context: ParamContext,
+        _context: ParamContext,
         world: &mut World,
         access: &mut crate::coroutine::CoroAccess,
     ) -> Option<Self> {
@@ -33,7 +35,6 @@ impl<R: Resource> CoroParam for RdRes<R> {
         }
 
         Some(RdRes {
-            context,
             id,
             _phantom: PhantomData,
         })
@@ -47,24 +48,16 @@ impl<R: Resource> CoroParam for RdRes<R> {
 impl<R: Resource> RdRes<R> {
     /// Return the current value of the [`Resource`]. The result ([`RdGuard`]) cannot be held
     /// accros any await.
-    pub fn get(&self) -> RdGuard<'_, R> {
-        unsafe {
-            RdGuard::new(
-                self.context
-                    .world_window
-                    .world_cell()
-                    .get_resource::<R>()
-                    .unwrap(),
-            )
-        }
+    pub fn get<'a>(&'a self, fib: &'a Fib) -> &'a R {
+        unsafe { fib.world_window.world_cell().get_resource::<R>().unwrap() }
     }
 
     /// Yields and resume when the [`Resource`] is mutated.
     ///
     /// Note that it integrates with the regular change detection of Bevy, meaning that the
     /// coroutine will be resumed, if a [`System`] mutates the value.
-    pub fn on_change(&self) -> OnChange<'_> {
-        OnChange::new(&self.context, ObservableId::Resource(self.id))
+    pub fn on_change<'a>(&'a self, fib: &'a mut Fib) -> OnChange<'a> {
+        OnChange::new(fib, ObservableId::Resource(self.id))
     }
 }
 
@@ -72,14 +65,13 @@ impl<R: Resource> RdRes<R> {
 ///
 /// Note that a Coroutine with such parameter will be canceled if the resource is removed.
 pub struct WrRes<R: Resource> {
-    context: ParamContext,
     id: ComponentId,
     _phantom: PhantomData<R>,
 }
 
 impl<R: Resource> CoroParam for WrRes<R> {
     fn init(
-        context: ParamContext,
+        _context: ParamContext,
         world: &mut World,
         access: &mut crate::coroutine::CoroAccess,
     ) -> Option<Self> {
@@ -89,7 +81,6 @@ impl<R: Resource> CoroParam for WrRes<R> {
         }
 
         Some(WrRes {
-            context,
             id,
             _phantom: PhantomData,
         })
@@ -103,29 +94,18 @@ impl<R: Resource> CoroParam for WrRes<R> {
 impl<R: Resource> WrRes<R> {
     /// Return the current value of the [`Resource`]. The result ([`RdGuard`]) cannot be held
     /// accros any await.
-    pub fn get(&self) -> RdGuard<'_, R> {
-        unsafe {
-            RdGuard::new(
-                self.context
-                    .world_window
-                    .world_cell()
-                    .get_resource::<R>()
-                    .unwrap(),
-            )
-        }
+    pub fn get<'a>(&'a self, fib: &'a Fib) -> &'a R {
+        unsafe { fib.world_window.world_cell().get_resource::<R>().unwrap() }
     }
 
     /// Return the current value of the [`Resource`]. The result ([`RdGuard`]) cannot be held
     /// accros any await.
-    pub fn get_mut(&mut self) -> WrGuard<'_, R> {
+    pub fn get_mut<'a>(&'a mut self, fib: &'a Fib) -> Mut<'a, R> {
         unsafe {
-            WrGuard::new(
-                self.context
-                    .world_window
-                    .world_cell()
-                    .get_resource_mut::<R>()
-                    .unwrap(),
-            )
+            fib.world_window
+                .world_cell()
+                .get_resource_mut::<R>()
+                .unwrap()
         }
     }
 
@@ -133,7 +113,7 @@ impl<R: Resource> WrRes<R> {
     ///
     /// Note that it integrates with the regular change detection of Bevy, meaning that the
     /// coroutine will be resumed, if a [`System`] mutates the value.
-    pub fn on_change(&self) -> OnChange<'_> {
-        OnChange::new(&self.context, ObservableId::Resource(self.id))
+    pub fn on_change<'a>(&'a self, fib: &'a mut Fib) -> OnChange<'a> {
+        OnChange::new(fib, ObservableId::Resource(self.id))
     }
 }

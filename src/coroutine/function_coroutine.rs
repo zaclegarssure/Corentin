@@ -72,7 +72,7 @@ pub trait CoroutineParamFunction<Marker>: Send + 'static {
     type Future: Future<Output = ()> + Send + 'static;
     type Params: CoroParam;
 
-    fn init(self, params: Self::Params) -> Self::Future;
+    fn init(self, fib: Fib, params: Self::Params) -> Self::Future;
 }
 
 impl<Marker: 'static, F> UninitCoroutine<Marker> for F
@@ -85,18 +85,19 @@ where
         let yield_channel = YieldChannel::new();
         let world_window = WorldWindow::closed_window();
 
-        let context = ParamContext {
+        let context = ParamContext { owner };
+
+        let mut access = CoroAccess::default();
+
+        let params = F::Params::init(context, world, &mut access)?;
+        let fib = Fib {
             owner,
             world_window: world_window.clone(),
             yield_channel: yield_channel.clone(),
         };
 
-        let mut access = CoroAccess::default();
-
-        let params = F::Params::init(context.clone(), world, &mut access)?;
-
         Some(FunctionCoroutine {
-            future: self.init(params),
+            future: self.init(fib, params),
             yield_channel,
             world_window,
             owner,
@@ -108,7 +109,9 @@ where
 /// The fib is a parameter througth which a coroutine can wait on various elementary construct.
 /// such as waiting until the next tick, waiting on multiple sub-coroutines.
 pub struct Fib {
-    pub(crate) context: ParamContext,
+    pub(crate) owner: Entity,
+    pub(crate) world_window: WorldWindow,
+    pub(crate) yield_channel: YieldChannel,
 }
 
 impl Fib {
@@ -117,44 +120,34 @@ impl Fib {
     /// of the last frame (delta time).
     ///
     /// [`Executor`]: crate::executor::Executor
-    pub fn next_tick(&self) -> NextTick {
-        NextTick::new(self.context.clone())
+    pub fn next_tick(&mut self) -> NextTick<'_> {
+        NextTick::new(self)
     }
 
     ///// Returns a coroutine that resolve after a certain [`Duration`]. Note that if the duration
     ///// is smaller than the time between two tick of the [`Executor`] it won't be compensated.
     /////
     ///// [`Executor`]: crate::executor::Executor
-    pub fn duration(&self, duration: Duration) -> DurationFuture {
-        DurationFuture::new(self.context.clone(), duration)
+    pub fn duration(&mut self, duration: Duration) -> DurationFuture<'_> {
+        DurationFuture::new(self, duration)
     }
 
     ///// Returns a coroutine that resolve once any of the underlying coroutine finishes. Note that
     ///// once this is done, all the others are dropped. The coroutines are resumed from top to
     ///// bottom, in case multiple of them are ready to make progress at the same time.
-    pub fn par_or<C, Marker>(&self, coro: C) -> ParOr
+    pub fn par_or<C, Marker>(&mut self, coro: C) -> ParOr<'_>
     where
         C: UninitCoroutine<Marker>,
     {
-        ParOr::new(self.context.clone()).with(coro)
+        ParOr::new(self).with(coro)
     }
 
     ///// Returns a coroutine that resolve once all of the underlying coroutine finishes.
-    pub fn par_and<C, Marker>(&self, coro: C) -> ParAnd
+    pub fn par_and<C, Marker>(&mut self, coro: C) -> ParAnd<'_>
     where
         C: UninitCoroutine<Marker>,
     {
-        ParAnd::new(self.context.clone()).with(coro)
-    }
-}
-
-impl CoroParam for Fib {
-    fn init(context: ParamContext, _world: &mut World, _access: &mut CoroAccess) -> Option<Self> {
-        Some(Self { context })
-    }
-
-    fn is_valid(_owner: Entity, _world: &World) -> bool {
-        true
+        ParAnd::new(self).with(coro)
     }
 }
 
@@ -163,16 +156,16 @@ macro_rules! impl_coro_function {
         #[allow(non_snake_case, unused_mut, unused_variables, unused_parens)]
         impl<Func, Fut, $($param: CoroParam),*> CoroutineParamFunction<fn($($param,)*) -> Fut> for Func
         where
-            Func: FnOnce($($param),*) -> Fut + Send + 'static,
+            Func: FnOnce(Fib, $($param),*) -> Fut + Send + 'static,
             Fut: Future<Output = ()> + Send + 'static,
         {
 
             type Future = Fut;
             type Params = ($($param),*);
 
-            fn init(self, params: Self::Params) -> Self::Future {
+            fn init(self, fib: Fib, params: Self::Params) -> Self::Future {
                 let ($(($param)),*) = params;
-                self($($param),*)
+                self(fib, $($param),*)
             }
         }
     };

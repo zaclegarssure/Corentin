@@ -294,21 +294,21 @@ mod tests {
         world.init_resource::<CoroWrites>();
         world.insert_resource(Time::new(Instant::now()));
 
-        coroutine(|fib: Fib| async move {
-            fib.par_or(|fib: Fib| async move {
-                fib.par_or(|fib: Fib| async move {
+        coroutine(|mut fib: Fib| async move {
+            fib.par_or(|mut fib: Fib| async move {
+                fib.par_or(|mut fib: Fib| async move {
                     loop {
                         fib.next_tick().await;
                     }
                 })
-                .with(|fib: Fib| async move {
+                .with(|mut fib: Fib| async move {
                     loop {
                         fib.next_tick().await;
                     }
                 })
                 .await;
             })
-            .with(|fib: Fib| async move {
+            .with(|mut fib: Fib| async move {
                 for _ in 0..4 {
                     fib.next_tick().await;
                 }
@@ -346,14 +346,14 @@ mod tests {
         world.insert_resource(Time::new(Instant::now()));
         let e = world.spawn((ExampleComponent, ExampleComponentBar)).id();
 
-        coroutine(|fib: Fib, _ex: Rd<ExampleComponent>| async move {
+        coroutine(|mut fib: Fib, _ex: Rd<ExampleComponent>| async move {
             loop {
                 fib.next_tick().await;
             }
         })
         .apply(e, &mut world);
 
-        coroutine(|fib: Fib, _ex: Rd<ExampleComponentBar>| async move {
+        coroutine(|mut fib: Fib, _ex: Rd<ExampleComponentBar>| async move {
             loop {
                 fib.next_tick().await;
             }
@@ -380,7 +380,7 @@ mod tests {
         world.init_resource::<CoroWrites>();
         world.insert_resource(Time::new(Instant::now()));
         let e = world.spawn(ExampleComponent).id();
-        coroutine(|fib: Fib, _ex: Opt<Rd<ExampleComponent>>| async move {
+        coroutine(|mut fib: Fib, _ex: Opt<Rd<ExampleComponent>>| async move {
             loop {
                 fib.next_tick().await;
             }
