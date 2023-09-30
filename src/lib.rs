@@ -49,7 +49,7 @@ mod tests {
 
         let a = Arc::new(Mutex::new(0));
         let b = Arc::clone(&a);
-        coroutine(|fib: Fib| async move {
+        coroutine(|mut fib: Fib| async move {
             *b.lock().unwrap() += 1;
             fib.next_tick().await;
             *b.lock().unwrap() += 1;
@@ -81,9 +81,9 @@ mod tests {
         let a = Arc::new(Mutex::new(0));
         let b = Arc::clone(&a);
 
-        coroutine(move |fib: Fib, ex: Rd<ExampleComponent>| async move {
+        coroutine(|mut fib: Fib, ex: Rd<ExampleComponent>| async move {
             fib.next_tick().await;
-            ex.on_change().await;
+            ex.on_change(&mut fib).await;
             *b.lock().unwrap() += 1;
         })
         .apply(e, &mut world);
@@ -115,7 +115,7 @@ mod tests {
         world.init_resource::<CoroWrites>();
         world.insert_resource(Time::new(Instant::now()));
 
-        coroutine(|| async move {
+        coroutine(|_: Fib| async move {
             external_future().await;
         })
         .apply(world.spawn_empty().id(), &mut world);
@@ -136,14 +136,14 @@ mod tests {
         let a = Arc::new(Mutex::new(0));
         let b = Arc::clone(&a);
 
-        coroutine(move |fib: Fib| async move {
-            fib.par_or(|fib: Fib| async move {
+        coroutine(|mut fib: Fib| async move {
+            fib.par_or(|mut fib: Fib| async move {
                 loop {
                     fib.next_tick().await;
                     *b.lock().unwrap() += 1;
                 }
             })
-            .with(|fib: Fib| async move {
+            .with(|mut fib: Fib| async move {
                 for _ in 0..4 {
                     fib.next_tick().await;
                 }
@@ -175,12 +175,12 @@ mod tests {
         let b = Arc::clone(&a);
         let c = Arc::clone(&a);
 
-        coroutine(|fib: Fib| async move {
-            fib.par_and(|fib: Fib| async move {
+        coroutine(|mut fib: Fib| async move {
+            fib.par_and(|mut fib: Fib| async move {
                 fib.next_tick().await;
                 *b.lock().unwrap() += 1;
             })
-            .with(|fib: Fib| async move {
+            .with(|mut fib: Fib| async move {
                 for _ in 0..2 {
                     fib.next_tick().await;
                     *c.lock().unwrap() += 1;
@@ -211,10 +211,10 @@ mod tests {
 
         let e = world.spawn(ExampleComponent(0)).id();
 
-        coroutine(|fib: Fib, example: Rd<ExampleComponent>| async move {
+        coroutine(|mut fib: Fib, example: Rd<ExampleComponent>| async move {
             for i in 0..5 {
                 fib.next_tick().await;
-                assert_eq!(example.get().0, i);
+                assert_eq!(example.get(&fib).0, i);
             }
         })
         .apply(e, &mut world);
@@ -237,12 +237,14 @@ mod tests {
 
         let e = world.spawn(ExampleComponent(0)).id();
 
-        coroutine(|fib: Fib, mut example: Wr<ExampleComponent>| async move {
-            for _ in 0..5 {
-                fib.next_tick().await;
-                example.get_mut().0 += 1;
-            }
-        })
+        coroutine(
+            |mut fib: Fib, mut example: Wr<ExampleComponent>| async move {
+                for _ in 0..5 {
+                    fib.next_tick().await;
+                    example.get_mut(&fib).0 += 1;
+                }
+            },
+        )
         .apply(e, &mut world);
 
         world.resource_scope(|w, mut executor: Mut<Executor>| {
@@ -265,17 +267,19 @@ mod tests {
         let a = Arc::new(Mutex::new(0));
         let b = Arc::clone(&a);
 
-        coroutine(|fib: Fib, mut example: Wr<ExampleComponent>| async move {
-            for _ in 0..5 {
-                fib.next_tick().await;
-                example.get_mut().0 += 1;
-            }
-        })
+        coroutine(
+            |mut fib: Fib, mut example: Wr<ExampleComponent>| async move {
+                for _ in 0..5 {
+                    fib.next_tick().await;
+                    example.get_mut(&fib).0 += 1;
+                }
+            },
+        )
         .apply(e, &mut world);
 
-        coroutine(|example: Rd<ExampleComponent>| async move {
+        coroutine(|mut fib: Fib, example: Rd<ExampleComponent>| async move {
             for _ in 0..5 {
-                example.on_change().await;
+                example.on_change(&mut fib).await;
                 *b.lock().unwrap() += 1;
             }
         })
@@ -301,18 +305,18 @@ mod tests {
         let a = Arc::new(Mutex::new(0));
         let b = Arc::clone(&a);
 
-        coroutine(|ex: Rd<ExampleComponent>| async move {
+        coroutine(|mut fib: Fib, ex: Rd<ExampleComponent>| async move {
             loop {
-                ex.on_change().await;
+                ex.on_change(&mut fib).await;
                 *b.lock().unwrap() += 1;
             }
         })
         .apply(e, &mut world);
 
-        coroutine(|fib: Fib, mut ex: Wr<ExampleComponent>| async move {
+        coroutine(|mut fib: Fib, mut ex: Wr<ExampleComponent>| async move {
             loop {
                 fib.next_tick().await;
-                ex.get_mut().0 += 1;
+                ex.get_mut(&mut fib).0 += 1;
             }
         })
         .apply(e, &mut world);

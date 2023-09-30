@@ -1,14 +1,11 @@
-use std::{
-    cell::Cell,
-    marker::PhantomData,
-    ops::{Deref, DerefMut},
-    rc::Rc,
-};
+use std::{cell::Cell, rc::Rc};
+
+use crate::prelude::Fib;
 
 use super::{CoroAccess, WaitingReason};
 use bevy::{
     ecs::{component::ComponentId, world::unsafe_world_cell::UnsafeWorldCell},
-    prelude::{Component, Entity, Mut, World},
+    prelude::{Component, Entity, World},
     utils::all_tuples,
 };
 
@@ -100,74 +97,16 @@ unsafe impl Sync for YieldChannel {}
 #[derive(Clone)]
 pub struct ParamContext {
     pub(crate) owner: Entity,
-    pub(crate) world_window: WorldWindow,
-    pub(crate) yield_channel: YieldChannel,
-}
-
-/// A guarded readonly reference, cannot be held accros awaiting points.
-pub struct RdGuard<'a, T> {
-    value: &'a T,
-    _phantom: PhantomData<*const T>,
-}
-
-impl<'a, T> RdGuard<'a, T> {
-    pub fn new(value: &'a T) -> Self {
-        Self {
-            value,
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<'a, T> Deref for RdGuard<'a, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        self.value
-    }
-}
-
-/// A guarded exclusive write reference, cannot be held accros awaiting points.
-pub struct WrGuard<'a, T> {
-    value: Mut<'a, T>,
-    _phantom: PhantomData<*const T>,
-}
-
-impl<'a, T> WrGuard<'a, T> {
-    pub fn new(value: Mut<'a, T>) -> Self {
-        Self {
-            value,
-            _phantom: PhantomData,
-        }
-    }
-}
-
-impl<'a, T> Deref for WrGuard<'a, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        self.value.deref()
-    }
-}
-
-impl<'a, T> DerefMut for WrGuard<'a, T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.value.deref_mut()
-    }
 }
 
 pub struct Opt<T> {
-    context: ParamContext,
     inner: T,
 }
 
 impl<T: CoroParam> Opt<T> {
-    pub fn get(&self) -> Option<&T> {
+    pub fn get(&self, fib: &Fib) -> Option<&T> {
         unsafe {
-            if T::is_valid(
-                self.context.owner,
-                self.context.world_window.world_cell().world(),
-            ) {
+            if T::is_valid(fib.owner, fib.world_window.world_cell().world()) {
                 Some(&self.inner)
             } else {
                 None
@@ -175,12 +114,9 @@ impl<T: CoroParam> Opt<T> {
         }
     }
 
-    pub fn get_mut(&mut self) -> Option<&mut T> {
+    pub fn get_mut(&mut self, fib: &Fib) -> Option<&mut T> {
         unsafe {
-            if T::is_valid(
-                self.context.owner,
-                self.context.world_window.world_cell().world(),
-            ) {
+            if T::is_valid(fib.owner, fib.world_window.world_cell().world()) {
                 Some(&mut self.inner)
             } else {
                 None
@@ -193,7 +129,7 @@ impl<T: CoroParam> CoroParam for Opt<T> {
     fn init(context: ParamContext, world: &mut World, access: &mut CoroAccess) -> Option<Self> {
         let t = T::init(context.clone(), world, access)?;
 
-        Some(Self { context, inner: t })
+        Some(Self { inner: t })
     }
 
     fn is_valid(_owner: Entity, _world: &World) -> bool {

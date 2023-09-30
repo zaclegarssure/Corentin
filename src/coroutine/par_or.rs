@@ -1,27 +1,27 @@
 use bevy::utils::synccell::SyncCell;
 
 use crate::coroutine::{CoroState, WaitingReason};
+use crate::prelude::Fib;
 
 use std::future::Future;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
-use super::coro_param::ParamContext;
 use super::CoroObject;
 use super::UninitCoroutine;
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct ParOr {
-    context: ParamContext,
+pub struct ParOr<'a> {
+    fib: &'a mut Fib,
     coroutines: Vec<CoroObject>,
     state: CoroState,
 }
 
-impl ParOr {
-    pub(crate) fn new(context: ParamContext) -> Self {
+impl<'a> ParOr<'a> {
+    pub(crate) fn new(fib: &'a mut Fib) -> Self {
         ParOr {
-            context,
+            fib,
             coroutines: vec![],
             state: CoroState::Running,
         }
@@ -35,8 +35,8 @@ impl ParOr {
         // Safety: We are getting polled right now, therefore we have exclusive world access.
         unsafe {
             if let Some(c) = coro.init(
-                self.context.owner,
-                self.context.world_window.world_cell().world_mut(),
+                self.fib.owner,
+                self.fib.world_window.world_cell().world_mut(),
             ) {
                 self.coroutines.push(SyncCell::new(Box::pin(c)));
             }
@@ -45,7 +45,7 @@ impl ParOr {
     }
 }
 
-impl Future for ParOr {
+impl Future for ParOr<'_> {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Self::Output> {
@@ -56,9 +56,12 @@ impl Future for ParOr {
                 Poll::Ready(())
             }
             CoroState::Running => {
+                if self.coroutines.is_empty() {
+                    return Poll::Ready(());
+                }
                 self.state = CoroState::Halted;
                 let coroutines = std::mem::take(&mut self.coroutines);
-                self.context
+                self.fib
                     .yield_channel
                     .send(WaitingReason::ParOr { coroutines });
                 Poll::Pending

@@ -24,10 +24,10 @@ fn setup_scene(
             ..default()
         })
         .add(coroutine(
-            |fib: Fib, mut transform: Wr<Transform>| async move {
+            |mut fib: Fib, mut transform: Wr<Transform>| async move {
                 loop {
                     let dt = fib.next_tick().await;
-                    transform.get_mut().translation.x += 100.0 * dt.as_secs_f32();
+                    transform.get_mut(&fib).translation.x += 100.0 * dt.as_secs_f32();
                 }
             },
         ));
