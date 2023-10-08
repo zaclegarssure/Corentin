@@ -21,6 +21,8 @@ pub mod prelude {
     pub use crate::plugin::CorentinPlugin;
 }
 
+mod rework;
+
 #[cfg(test)]
 mod tests {
     use std::{
