@@ -1,9 +1,12 @@
+use std::default;
 use std::pin::Pin;
 
 use bevy::prelude::{Entity, World};
 use bevy::time::Timer;
 use bevy::utils::synccell::SyncCell;
 use tinyset::SetU64;
+
+use self::id_alloc::Id;
 
 mod all;
 mod executor;
@@ -13,6 +16,7 @@ mod handle;
 mod scope;
 mod tick;
 mod waker;
+mod id_alloc;
 
 // THINGS MISSING:
 // Dropping a handle should drop the coroutine
@@ -39,8 +43,8 @@ pub struct CoroutineResult {
 }
 
 pub struct NewCoroutine {
-    id: Entity,
-    coroutine: CoroObject,
+    id: Id,
+    coroutine: HeapCoro,
     coro_type: CoroType,
     should_start_now: bool,
 }
@@ -74,4 +78,4 @@ pub enum WaitingReason {
 /// A heap allocated [`Coroutine`]
 /// It is pinned since most coroutine are implemented using [`Future`]. [`SyncCell`] is used to
 /// make them [`Sync`] while being only [`Send`].
-type CoroObject = SyncCell<Pin<Box<dyn Coroutine>>>;
+type HeapCoro = SyncCell<Pin<Box<dyn Coroutine>>>;
