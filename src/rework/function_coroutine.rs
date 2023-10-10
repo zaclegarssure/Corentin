@@ -1,21 +1,21 @@
 use crate::rework::NewCoroutine;
 use bevy::ecs::world::World;
-use bevy::ecs::world::unsafe_world_cell::UnsafeWorldCell;
+
 use bevy::prelude::Entity;
 use oneshot::Sender;
 use std::boxed::Box;
 use std::future::Future;
-use std::mem::MaybeUninit;
+
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
 use pin_project::pin_project;
 
+use super::coro_param::CoroParam;
 use super::CoroAccess;
 use super::CoroMeta;
-use super::coro_param::CoroParam;
-use super::id_alloc::Id;
+
 use super::scope::Scope;
 use super::waker;
 use super::Coroutine;
@@ -59,7 +59,11 @@ where
     T: Send + Sync + 'static,
     F: CoroutineParamFunction<Marker, T>,
 {
-    unsafe fn resume_unsafe(self: Pin<&mut Self>, world: *mut World, ids: &super::id_alloc::Ids) -> CoroutineResult {
+    unsafe fn resume_unsafe(
+        self: Pin<&mut Self>,
+        world: *mut World,
+        _ids: &super::id_alloc::Ids,
+    ) -> CoroutineResult {
         let waker = waker::create();
         // Dummy context
         let mut cx = Context::from_waker(&waker);
@@ -96,7 +100,7 @@ where
         }
     }
 
-    fn is_valid(&self, world: &World) -> bool {
+    fn is_valid(&self, _world: &World) -> bool {
         true
     }
 
@@ -105,23 +109,27 @@ where
     }
 }
 
-
 impl<Marker: 'static, F, T> FunctionCoroutine<Marker, F, T>
 where
     T: Send + Sync + 'static,
-    F: CoroutineParamFunction<Marker, T> {
-
-    pub fn from_function(scope: &Scope, owner: Entity, sender: Option<Sender<T>>,f: F) -> Option<Self> {
+    F: CoroutineParamFunction<Marker, T>,
+{
+    pub fn from_function(
+        scope: &Scope,
+        owner: Entity,
+        sender: Option<Sender<T>>,
+        f: F,
+    ) -> Option<Self> {
         let mut meta = CoroMeta {
             owner,
             access: CoroAccess::default(),
         };
 
-        let params = F::Params::init(scope.world_cell() ,&mut meta)?;
+        let params = F::Params::init(scope.world_cell(), &mut meta)?;
         let world_ptr = Box::into_raw(Box::new(std::ptr::null_mut()));
         let ids_ptr = Box::into_raw(Box::new(std::ptr::null()));
         let shared_yield = Box::into_raw(Box::new(None));
-        let shared_new_coro = Box::into_raw(Box::new(Vec::new()));
+        let shared_new_coro = Box::into_raw(Box::default());
 
         let new_scope = Scope {
             owner,

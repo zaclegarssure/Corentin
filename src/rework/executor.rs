@@ -98,7 +98,6 @@ impl Executor {
         parents: &mut ParentTable,
         world: &mut World,
     ) {
-
         if !self.ids.contains(coro_id) {
             return;
         }

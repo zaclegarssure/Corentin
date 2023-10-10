@@ -2,15 +2,16 @@ use std::pin::Pin;
 
 use bevy::ecs::component::ComponentId;
 use bevy::prelude::Entity;
-use bevy::utils::HashMap;
-use bevy::{prelude::World, ecs::system::EntityCommand};
+use bevy::prelude::World;
 use bevy::time::Timer;
 use bevy::utils::synccell::SyncCell;
+use bevy::utils::HashMap;
 use tinyset::{SetU64, SetUsize};
 
 use self::id_alloc::{Id, Ids};
 
 mod all;
+mod coro_param;
 mod executor;
 mod first;
 mod function_coroutine;
@@ -19,7 +20,6 @@ mod id_alloc;
 mod scope;
 mod tick;
 mod waker;
-mod coro_param;
 
 // THINGS MISSING:
 // Dropping a scope should drop the local entities
@@ -78,10 +78,7 @@ impl CoroAccess {
             }
         }
 
-        self.writes
-            .entry(to)
-            .or_default()
-            .insert(component.index())
+        self.writes.entry(to).or_default().insert(component.index())
     }
 
     /// Add a read access. Returns false if there is a conflict.
@@ -93,10 +90,7 @@ impl CoroAccess {
             }
         }
 
-        self.reads
-            .entry(to)
-            .or_default()
-            .insert(component.index());
+        self.reads.entry(to).or_default().insert(component.index());
 
         true
     }
