@@ -20,6 +20,7 @@ mod id_alloc;
 mod scope;
 mod tick;
 mod waker;
+mod commands;
 
 // THINGS MISSING:
 // Dropping a scope should drop the local entities
@@ -48,10 +49,14 @@ pub trait Coroutine: Send + 'static {
 
     /// Returns this coroutine metadata
     fn meta(&self) -> &CoroMeta;
+
+    /// Cleanup any memory allocated by this coroutine, this is a quick fix
+    /// because `pin_project` does not let any custom Drop implementation.
+    fn cleanup(&self);
 }
 
 pub struct CoroMeta {
-    owner: Entity,
+    owner: Option<Entity>,
     access: CoroAccess,
 }
 
@@ -136,3 +141,137 @@ pub enum WaitingReason {
 /// It is pinned since most coroutine are implemented using [`Future`]. [`SyncCell`] is used to
 /// make them [`Sync`] while being only [`Send`].
 type HeapCoro = SyncCell<Pin<Box<dyn Coroutine>>>;
+
+#[cfg(test)]
+mod test {
+    use std::{time::Instant, sync::{Mutex, Arc}};
+
+    use bevy::{time::Time, ecs::system::Command, prelude::Mut};
+
+    use super::{*, executor::Executor, commands::root_coroutine, scope::Scope};
+
+
+    #[test]
+    fn wait_on_tick() {
+        let mut world = World::new();
+        world.init_resource::<Executor>();
+        world.insert_resource(Time::new(Instant::now()));
+
+        let a = Arc::new(Mutex::new(0));
+        let b = Arc::clone(&a);
+        root_coroutine(|mut s: Scope| async move {
+            *b.lock().unwrap() += 1;
+            s.next_tick().await;
+            *b.lock().unwrap() += 1;
+            s.next_tick().await;
+            *b.lock().unwrap() += 1;
+        })
+        .apply(&mut world);
+
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
+            executor.tick(w);
+            assert_eq!(*a.lock().unwrap(), 1);
+            executor.tick(w);
+            assert_eq!(*a.lock().unwrap(), 2);
+            executor.tick(w);
+            assert_eq!(*a.lock().unwrap(), 3);
+            executor.tick(w);
+            assert_eq!(*a.lock().unwrap(), 3);
+        });
+    }
+
+    #[test]
+    #[should_panic]
+    fn await_external_future_panic() {
+        async fn external_future() {
+            std::future::pending::<()>().await;
+        }
+        let mut world = World::new();
+        world.init_resource::<Executor>();
+        world.insert_resource(Time::new(Instant::now()));
+
+        root_coroutine(|_: Scope| async move {
+            external_future().await;
+        })
+        .apply(&mut world);
+
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
+            executor.tick(w);
+        });
+    }
+
+
+    #[test]
+    fn waiting_on_first() {
+        let mut world = World::new();
+        world.init_resource::<Executor>();
+        world.insert_resource(Time::new(Instant::now()));
+
+        let a = Arc::new(Mutex::new(0));
+        let b = Arc::clone(&a);
+
+        root_coroutine(|mut fib: Scope| async move {
+            let first = fib.start(|mut s: Scope| async move {
+                loop {
+                    s.next_tick().await;
+                    *b.lock().unwrap() += 1;
+                }
+            });
+
+            let second = fib.start(|mut s: Scope| async move {
+                for _ in 0..4 {
+                    s.next_tick().await;
+                }
+            });
+
+            fib.first([first, second]).await;
+        })
+        .apply(&mut world);
+
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
+            for i in 0..5 {
+                executor.tick(w);
+                assert_eq!(*a.lock().unwrap(), i);
+            }
+        });
+    }
+
+
+    #[test]
+    fn waiting_on_all() {
+        let mut world = World::new();
+        world.init_resource::<Executor>();
+        world.insert_resource(Time::new(Instant::now()));
+
+        let a = Arc::new(Mutex::new(0));
+        let b = Arc::clone(&a);
+        let c = Arc::clone(&a);
+
+        root_coroutine(|mut s: Scope| async move {
+            let first = s.start(|mut s: Scope| async move {
+                s.next_tick().await;
+                *b.lock().unwrap() += 1;
+            });
+            let second = s.start(|mut s: Scope| async move {
+                for _ in 0..2 {
+                    s.next_tick().await;
+                    *c.lock().unwrap() += 1;
+                }
+            });
+
+            s.all((first, second)).await;
+        })
+        .apply(&mut world);
+
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
+            executor.tick(w);
+            assert_eq!(*a.lock().unwrap(), 0);
+            executor.tick(w);
+            assert_eq!(*a.lock().unwrap(), 2);
+            executor.tick(w);
+            assert_eq!(*a.lock().unwrap(), 3);
+            executor.tick(w);
+            assert_eq!(*a.lock().unwrap(), 3);
+        });
+    }
+}

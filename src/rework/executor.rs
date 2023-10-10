@@ -1,4 +1,4 @@
-use bevy::time::Time;
+use bevy::{time::Time, utils::synccell::SyncCell};
 use std::{collections::VecDeque, ops::Index};
 
 use bevy::{
@@ -14,7 +14,7 @@ use super::{
 };
 
 #[derive(Resource, Default)]
-struct Executor {
+pub struct Executor {
     ids: Ids,
     coroutines: HashMap<Id, HeapCoro>,
     waiting_on_tick: VecDeque<Id>,
@@ -26,13 +26,18 @@ struct Executor {
 }
 
 impl Executor {
-    fn add(&mut self, id: Id, coroutine: HeapCoro) {
-        self.coroutines.insert(id, coroutine).unwrap();
+    pub fn add_coroutine(&mut self, coroutine: HeapCoro) {
+        let id = self.ids.allocate_id();
+        let prev = self.coroutines.insert(id, coroutine);
+        self.waiting_on_tick.push_back(id);
+        debug_assert!(prev.is_none());
     }
 
     fn cancel(&mut self, coro_id: Id) {
         self.ids.free(coro_id);
-        self.coroutines.remove(&coro_id);
+        if let Some(mut coro) = self.coroutines.remove(&coro_id) {
+            coro.get().cleanup();
+        }
 
         if let Some(owned) = self.scope_ownership.remove(&coro_id) {
             for c in owned {
@@ -57,7 +62,7 @@ impl Executor {
         }
     }
 
-    fn tick(&mut self, world: &mut World) {
+    pub fn tick(&mut self, world: &mut World) {
         let mut root_coros = VecDeque::<Id>::new();
 
         root_coros.append(&mut self.waiting_on_tick);
@@ -87,6 +92,8 @@ impl Executor {
         while let Some((coro_id, node)) = ready_coro.pop_front() {
             self.resume(coro_id, node, &mut ready_coro, &mut parents, world);
         }
+
+        self.ids.flush();
     }
 
     /// Run a specific coroutine and it's children.
@@ -174,7 +181,9 @@ impl Executor {
         ready_coro: &mut VecDeque<(Id, usize)>,
         parents: &mut ParentTable,
     ) {
-        self.coroutines.remove(&coro_id);
+        if let Some(mut coro) = self.coroutines.remove(&coro_id) {
+            coro.get().cleanup();
+        }
 
         if let Some(owned) = self.scope_ownership.remove(&coro_id) {
             for c in owned {

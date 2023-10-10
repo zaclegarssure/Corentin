@@ -20,14 +20,30 @@ use super::{
 /// scheduler, queue commands and so on. It is the most unsafe part of this library, but once
 /// proper coroutines are implemented in Rust, this would not be the case for the most part.
 pub struct Scope {
-    pub(crate) owner: Entity,
-    pub(crate) world_ptr: *const *mut World,
-    pub(crate) ids_ptr: *const *const Ids,
-    pub(crate) shared_yield: *mut Option<WaitingReason>,
-    pub(crate) shared_new_coro: *mut Vec<NewCoroutine>,
+    owner: Option<Entity>,
+    world_ptr: *const *mut World,
+    ids_ptr: *const *const Ids,
+    shared_yield: *mut Option<WaitingReason>,
+    shared_new_coro: *mut Vec<NewCoroutine>,
 }
 
 impl Scope {
+    pub(crate) fn new(
+        owner: Option<Entity>,
+        world_ptr: *const *mut World,
+        ids_ptr: *const *const Ids,
+        shared_yield: *mut Option<WaitingReason>,
+        shared_new_coro: *mut Vec<NewCoroutine>,
+    ) -> Self {
+        Self {
+            owner,
+            world_ptr,
+            ids_ptr,
+            shared_yield,
+            shared_new_coro,
+        }
+    }
+
     /// Returns a future that resolve once all of the underlying coroutine finishes.
     pub fn all<H: HandleTuple>(&mut self, handles: H) -> AwaitAll<'_, H> {
         AwaitAll::new(self, handles)
@@ -142,7 +158,7 @@ impl Scope {
 
     /// Check if the shared_zone is accessible, and panic otherwise
     fn check_shared(&self) {
-        todo!()
+        //todo!()
     }
 
     pub fn set_waiting_reason(&mut self, reason: WaitingReason) {
@@ -155,6 +171,11 @@ impl Scope {
     pub fn world_cell(&self) -> UnsafeWorldCell<'_> {
         self.check_shared();
         unsafe { (**self.world_ptr).as_unsafe_world_cell() }
+    }
+
+    pub fn world_cell_read_only(&self) -> UnsafeWorldCell<'_> {
+        self.check_shared();
+        unsafe { (**self.world_ptr).as_unsafe_world_cell_readonly() }
     }
 
     fn add_new_coro(
@@ -174,6 +195,8 @@ impl Scope {
         }
     }
 }
+
+unsafe impl Send for Scope {}
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub(crate) enum CoroState {
