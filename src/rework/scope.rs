@@ -1,22 +1,30 @@
 use std::time::Duration;
 
-use bevy::{ecs::world::unsafe_world_cell::UnsafeWorldCell, prelude::World};
+use bevy::{
+    ecs::world::unsafe_world_cell::UnsafeWorldCell,
+    prelude::{Entity, World},
+    utils::synccell::SyncCell,
+};
 
 use super::{
     all::AwaitAll,
     first::AwaitFirst,
+    function_coroutine::{CoroutineParamFunction, FunctionCoroutine},
     handle::{CoroHandle, HandleTuple},
+    id_alloc::{Id, Ids},
     tick::{DurationFuture, NextTick},
-    NewCoroutine, WaitingReason,
+    Coroutine, NewCoroutine, WaitingReason,
 };
 
 /// The first parameter of any [`Coroutine`] It is used to spawn sub-coroutines, yield back to the
 /// scheduler, queue commands and so on. It is the most unsafe part of this library, but once
 /// proper coroutines are implemented in Rust, this would not be the case for the most part.
 pub struct Scope {
-    world_ptr: *const *mut World,
-    shared_yield: *mut Option<WaitingReason>,
-    shared_new_coro: *mut Vec<NewCoroutine>,
+    pub(crate) owner: Entity,
+    pub(crate) world_ptr: *const *mut World,
+    pub(crate) ids_ptr: *const *const Ids,
+    pub(crate) shared_yield: *mut Option<WaitingReason>,
+    pub(crate) shared_new_coro: *mut Vec<NewCoroutine>,
 }
 
 impl Scope {
@@ -60,6 +68,78 @@ impl Scope {
         DurationFuture::new(self, duration)
     }
 
+    /// Start the `coroutine` when reaching the next `await`. When the scope is dropped, the
+    /// `coroutine` is automatically dropped as well.
+    ///
+    /// Note: If the coroutine is invalid (with conflicting parameters for instance), this function
+    /// has no effects.
+    pub fn start_local<Marker: 'static, T, C>(&mut self, coroutine: C)
+    where
+        C: CoroutineParamFunction<Marker, T>,
+        T: Sync + Send + 'static,
+    {
+        if let Some(coroutine) = FunctionCoroutine::from_function(self, self.owner, None, coroutine)
+        {
+            let id = self.alloc_id();
+            self.add_new_coro(coroutine, id, true, true);
+        }
+    }
+
+    /// Start the `coroutine` when reaching the next `await`, and returns a [`CoroHandle`] to it.
+    /// When the handle is dropped, the `coroutine` is automatically dropped as well.
+    ///
+    /// Note: If the coroutine is invalid (with conflicting parameters for instance), this function
+    /// panics.
+    pub fn start<Marker: 'static, T, C>(&mut self, coroutine: C) -> CoroHandle<T>
+    where
+        C: CoroutineParamFunction<Marker, T>,
+        T: Sync + Send + 'static,
+    {
+        self.try_start(coroutine).unwrap()
+    }
+
+    /// Start the `coroutine` when reaching the next `await`, and returns a [`CoroHandle`] to it.
+    /// When the handle is dropped, the `coroutine` is automatically dropped as well.
+    /// If the coroutine is invalid (with conflicting parameters for instance), this function
+    /// returns None.
+    pub fn try_start<Marker: 'static, T, C>(&mut self, coroutine: C) -> Option<CoroHandle<T>>
+    where
+        C: CoroutineParamFunction<Marker, T>,
+        T: Sync + Send + 'static,
+    {
+        let (sender, receiver) = oneshot::channel();
+        let coroutine =
+            FunctionCoroutine::from_function(self, self.owner, Some(sender), coroutine)?;
+        let id = self.alloc_id();
+        self.add_new_coro(coroutine, id, false, true);
+        Some(CoroHandle::Waiting { id, receiver })
+    }
+
+    /// Start the `coroutine` when reaching the next `await`. The coroutine cannot be dropped, and
+    /// will be run until completion. This is unstructured and must be used with caution.
+    ///
+    /// Note: If the coroutine is invalid (with conflicting parameters for instance), this function
+    /// has no effects.
+    pub fn start_forget<Marker: 'static, T, C>(&mut self, coroutine: C)
+    where
+        C: CoroutineParamFunction<Marker, T>,
+        T: Sync + Send + 'static,
+    {
+        if let Some(coroutine) = FunctionCoroutine::from_function(self, self.owner, None, coroutine)
+        {
+            let id = self.alloc_id();
+            self.add_new_coro(coroutine, id, false, true);
+        }
+    }
+
+    pub fn owner(&self) -> Entity {
+        self.owner()
+    }
+
+    pub fn alloc_id(&self) -> Id {
+        unsafe { (**self.ids_ptr).allocate_id() }
+    }
+
     /// Check if the shared_zone is accessible, and panic otherwise
     fn check_shared(&self) {
         todo!()
@@ -75,6 +155,23 @@ impl Scope {
     pub fn world_cell(&self) -> UnsafeWorldCell<'_> {
         self.check_shared();
         unsafe { (**self.world_ptr).as_unsafe_world_cell() }
+    }
+
+    fn add_new_coro(
+        &mut self,
+        coro: impl Coroutine,
+        id: Id,
+        is_owned_by_scope: bool,
+        should_start_now: bool,
+    ) {
+        unsafe {
+            (*self.shared_new_coro).push(NewCoroutine {
+                id,
+                coroutine: SyncCell::new(Box::pin(coro)),
+                is_owned_by_scope,
+                should_start_now,
+            })
+        }
     }
 }
 

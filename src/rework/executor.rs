@@ -10,7 +10,7 @@ use tinyset::{SetU64, SetUsize};
 
 use super::{
     id_alloc::{Id, Ids},
-    CoroType, Coroutine, CoroutineResult, CoroutineStatus, HeapCoro, NewCoroutine, WaitingReason,
+    Coroutine, CoroutineResult, CoroutineStatus, HeapCoro, NewCoroutine, WaitingReason,
 };
 
 #[derive(Resource, Default)]
@@ -98,31 +98,37 @@ impl Executor {
         parents: &mut ParentTable,
         world: &mut World,
     ) {
+
         if !self.ids.contains(coro_id) {
             return;
         }
 
         let coro = self.coroutines.get_mut(&coro_id).unwrap().get();
 
+        // Safety: The world pointer is valid (and exclusive) and we don't run anything
+        // concurrently on the world right now
         if !coro.as_mut().is_valid(world) {
             self.cancel(coro_id);
             return;
         }
 
-        let CoroutineResult { result, new_coro } = Coroutine::resume(coro.as_mut(), world);
+        let world = world as *mut _;
+        let CoroutineResult { result, new_coro } =
+            // Safety: same as the previous one
+            unsafe { Coroutine::resume_unsafe(coro.as_mut(), world, &self.ids) };
 
         // TODO Signals
 
         for NewCoroutine {
             id,
             coroutine,
-            coro_type,
+            is_owned_by_scope,
             should_start_now,
         } in new_coro
         {
             self.coroutines.insert(id, coroutine);
 
-            if let CoroType::Local = coro_type {
+            if is_owned_by_scope {
                 self.scope_ownership
                     .entry(coro_id)
                     .or_default()

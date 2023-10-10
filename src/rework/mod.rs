@@ -1,11 +1,14 @@
 use std::pin::Pin;
 
-use bevy::prelude::World;
+use bevy::ecs::component::ComponentId;
+use bevy::prelude::Entity;
+use bevy::utils::HashMap;
+use bevy::{prelude::World, ecs::system::EntityCommand};
 use bevy::time::Timer;
 use bevy::utils::synccell::SyncCell;
-use tinyset::SetU64;
+use tinyset::{SetU64, SetUsize};
 
-use self::id_alloc::Id;
+use self::id_alloc::{Id, Ids};
 
 mod all;
 mod executor;
@@ -16,23 +19,87 @@ mod id_alloc;
 mod scope;
 mod tick;
 mod waker;
+mod coro_param;
 
 // THINGS MISSING:
-// Dropping a handle should drop the coroutine
 // Dropping a scope should drop the local entities
 // Commands
 // SIGNALS !!!
 
 /// A coroutine is a form of state machine. It can get resumed, and returns on which condition it
 /// should be resumed again.
+///
+/// Note: Ideally we would use [`UnsafeWorldCell`](bevy::ecs::world::UnsafeWorldCell) here,
+/// but we can't due to lifetime issue, so we're back to using raw pointers letssgo
+/// This also means that the pointers must be valid before calling any of these functions.
 pub trait Coroutine: Send + 'static {
     /// Resume execution of this coroutine.
     ///
-    fn resume(self: Pin<&mut Self>, world: &mut World) -> CoroutineResult;
+    /// # Safety:
+    /// The implementator must make sure to not perform any structural change to `world`.
+    /// basically, it should just be used as an [`UnsafeWorldCell`].
+    /// For the caller, if this is called concurrently, it must be done such that not conflicting
+    /// access to the world can be performed.
+    unsafe fn resume_unsafe(self: Pin<&mut Self>, world: *mut World, ids: &Ids) -> CoroutineResult;
 
     /// Return true, if this coroutine is still valid. If it is not, it should be despawned.
     /// Should be called before [`resume`], to avoid any panic.
     fn is_valid(&self, world: &World) -> bool;
+
+    /// Returns this coroutine metadata
+    fn meta(&self) -> &CoroMeta;
+}
+
+pub struct CoroMeta {
+    owner: Entity,
+    access: CoroAccess,
+}
+
+#[derive(Default, Clone)]
+pub struct CoroAccess {
+    reads: HashMap<SourceId, SetUsize>,
+    writes: HashMap<SourceId, SetUsize>,
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Hash)]
+pub enum SourceId {
+    Entity(Entity),
+    AllEntities,
+    World,
+}
+
+impl CoroAccess {
+    /// Add a write access. Returns false if there is a conflict.
+    /// The access is updated only when no conflicts are found.
+    pub fn add_write(&mut self, to: SourceId, component: ComponentId) -> bool {
+        if let Some(reads) = self.reads.get(&to) {
+            if reads.contains(component.index()) {
+                return false;
+            }
+        }
+
+        self.writes
+            .entry(to)
+            .or_default()
+            .insert(component.index())
+    }
+
+    /// Add a read access. Returns false if there is a conflict.
+    /// The access is updated only when no conflicts are found.
+    pub fn add_read(&mut self, to: SourceId, component: ComponentId) -> bool {
+        if let Some(reads) = self.writes.get(&to) {
+            if reads.contains(component.index()) {
+                return false;
+            }
+        }
+
+        self.reads
+            .entry(to)
+            .or_default()
+            .insert(component.index());
+
+        true
+    }
 }
 
 pub struct CoroutineResult {
@@ -41,22 +108,17 @@ pub struct CoroutineResult {
     // TODO: triggered_signals?
 }
 
+/// A newly spawned [`Coroutine`] and how it should be handled by the [`Executor`](executor).
 pub struct NewCoroutine {
     id: Id,
     coroutine: HeapCoro,
-    coro_type: CoroType,
+    is_owned_by_scope: bool,
     should_start_now: bool,
-}
-
-pub enum CoroType {
-    Local,
-    Handled,
-    Background,
 }
 
 /// The status of the [`Coroutine`] after being resumed. If it is [`CoroutineStatus::Yield`], then
 /// the coroutine should be resumed again once the condition is fullfiled. If it is [`Done`] then
-/// the coroutine has finish execution and should not be resumed again, doing so will panic.
+/// the coroutine has finish execution and should not be resumed again. Doing so will panic.
 pub enum CoroutineStatus {
     Yield(WaitingReason),
     Done,
