@@ -1,111 +1,117 @@
-use std::marker::PhantomData;
-
-use bevy::{
-    prelude::{Component, Entity},
-    utils::all_tuples,
-};
+use bevy::utils::all_tuples;
+use oneshot::{Receiver, TryRecvError};
 use tinyset::SetU64;
 
-use super::scope::Scope;
+use super::id_alloc::Id;
 
 /// Value representing an ongoing coroutine. Can be used to await it's result, or cancel the
 /// underlying coroutine by dropping it.
-pub struct CoroHandle<T> {
-    pub(crate) id: Entity,
-    _phantom: PhantomData<T>,
+pub enum CoroHandle<T> {
+    Waiting { id: Id, receiver: Receiver<T> },
+    Done(T),
+    Canceled,
+    Finish,
 }
 
-impl<T: Sync + Send + 'static> CoroHandle<T> {
-    /// Build a new Handler of the [`Coroutine`] with id `id`.
-    fn new(id: Entity) -> Self {
-        Self {
-            id,
-            _phantom: PhantomData,
+/// Trait so that we can have function generic over a tuple of handles, like await all.
+pub trait HandleTuple {
+    type Output;
+
+    /// Update the status of each handles,
+    fn update_status(&mut self) -> Status;
+
+    // Try to fetch the result from the coroutines in this tuple. If any of the handle is not in
+    // the [`CoroHandle::Done`] state, this returns [`None`].
+    fn try_fetch(&mut self) -> Option<Self::Output>;
+}
+
+pub enum Status {
+    Done,
+    StillWaiting(SetU64),
+    Canceled,
+    Consumed,
+}
+
+impl Status {
+    fn combine(self, f: impl FnOnce() -> Status) -> Status {
+        match self {
+            Status::Done => f(),
+            Status::StillWaiting(mut w) => match f() {
+                Status::Done => Status::StillWaiting(w),
+                Status::StillWaiting(w2) => {
+                    w.extend(w2);
+                    Status::StillWaiting(w)
+                }
+                status => status,
+            },
+            _ => self,
+        }
+    }
+}
+
+impl<T> HandleTuple for CoroHandle<T> {
+    type Output = T;
+
+    fn update_status(&mut self) -> Status {
+        match self {
+            CoroHandle::Waiting { id, receiver } => match receiver.try_recv() {
+                Ok(val) => {
+                    *self = CoroHandle::Done(val);
+                    Status::Done
+                }
+                Err(TryRecvError::Empty) => {
+                    let mut set = SetU64::new();
+                    set.insert(id.to_bits());
+                    Status::StillWaiting(set)
+                }
+                Err(TryRecvError::Disconnected) => {
+                    *self = CoroHandle::Canceled;
+                    Status::Canceled
+                }
+            },
+            CoroHandle::Done(_) => Status::Done,
+            CoroHandle::Canceled => Status::Canceled,
+            CoroHandle::Finish => Status::Consumed,
         }
     }
 
-    /// Fetch the result from the coroutine [`Entity`].
-    ///
-    /// # Safety
-    /// The caller must make sure that it has exclusive access to the coroutine who's result is
-    /// being taken.
-    pub unsafe fn fetch(&self, scope: &Scope) -> T {
-        scope
-            .world_cell()
-            .get_entity(self.id)
-            .unwrap()
-            .get_mut::<HandledResult<T>>()
-            .unwrap()
-            .0
-            .take()
-            .unwrap()
-    }
-
-    /// Try to fetch the result from the coroutine [`Entity`], if it is available.
-    ///
-    /// # Safety
-    /// The caller must make sure that it has exclusive access to the coroutine who's result is
-    /// being taken.
-    pub unsafe fn try_fetch(&self, scope: &Scope) -> Option<T> {
-        let res = scope
-            .world_cell()
-            .get_entity(self.id)?
-            .get_mut::<HandledResult<T>>()?
-            .0
-            .take()?;
-        Some(res)
+    fn try_fetch(&mut self) -> Option<Self::Output> {
+        match self {
+            CoroHandle::Waiting { id: _, receiver } => match receiver.try_recv() {
+                Ok(val) => {
+                    *self = CoroHandle::Finish;
+                    Some(val)
+                }
+                _ => None,
+            },
+            CoroHandle::Done(_) => match std::mem::replace(self, CoroHandle::Finish) {
+                CoroHandle::Done(v) => Some(v),
+                _ => unreachable!(),
+            },
+            _ => None,
+        }
     }
 }
-
-/// Trait so that we can have function generic over a tuple of handlers.
-pub trait HandlerTuple: 'static {
-    type Output;
-
-    /// Fetch the result from the coroutines in this tuple.
-    ///
-    /// # Safety
-    /// The caller must make sure that it has exclusive access to the coroutines who's result is
-    /// being taken.
-    unsafe fn fetch(&self, scope: &mut Scope) -> Self::Output;
-
-    /// Returns the set of all [`Coroutine`]s ids within that tuple.
-    fn to_set(&self) -> SetU64;
-}
-
-impl<T: Send + Sync + 'static> HandlerTuple for CoroHandle<T> {
-    type Output = T;
-
-    unsafe fn fetch(&self, scope: &mut Scope) -> Self::Output {
-        self.fetch(scope)
-    }
-
-    fn to_set(&self) -> SetU64 {
-        let mut result = SetU64::new();
-        result.insert(self.id.to_bits());
-        result
-    }
-}
-
-/// Each handle coroutines put their result in their `HandledResult` component.
-#[derive(Component)]
-pub(crate) struct HandledResult<T: Send + Sync + 'static>(pub(crate) Option<T>);
 
 macro_rules! impl_handler_tuple {
     ($first: ident, $($param: ident),*) => {
         #[allow(non_snake_case)]
-        impl<$first: HandlerTuple, $($param: HandlerTuple),*> HandlerTuple for ($first, $($param,)*) {
+        impl<$first: HandleTuple, $($param: HandleTuple),*> HandleTuple for ($first, $($param,)*) {
             type Output = ($first::Output, $($param::Output,)*);
 
-            unsafe fn fetch(&self, scope: &mut Scope) -> Self::Output {
+
+            /// Update the status of each handles,
+            fn update_status(&mut self) -> Status {
                 let (first, $($param,)*) = self;
-                (first.fetch(scope), $($param.fetch(scope)),*)
+                first.update_status()$(.combine(|| $param.update_status()))*
             }
 
-            fn to_set(&self) -> SetU64 {
+            // Try to fetch the result from the coroutines in this tuple. If any of the handle is not in
+            // the [`CoroHandle::Done`] state, this returns [`None`].
+            fn try_fetch(&mut self) -> Option<Self::Output> {
                 let (first, $($param,)*) = self;
-                let mut result = first.to_set();
-                $(result.extend($param.to_set());)*
-                result
+                Some((first.try_fetch()?, $($param.try_fetch()?,)*))
+
             }
         }
     };

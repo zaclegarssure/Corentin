@@ -5,7 +5,7 @@ use bevy::{ecs::world::unsafe_world_cell::UnsafeWorldCell, prelude::World};
 use super::{
     all::AwaitAll,
     first::AwaitFirst,
-    handle::{CoroHandle, HandlerTuple},
+    handle::{CoroHandle, HandleTuple},
     tick::{DurationFuture, NextTick},
     NewCoroutine, WaitingReason,
 };
@@ -21,7 +21,7 @@ pub struct Scope {
 
 impl Scope {
     /// Returns a future that resolve once all of the underlying coroutine finishes.
-    pub fn all<H: HandlerTuple>(&mut self, handles: H) -> AwaitAll<'_, H> {
+    pub fn all<H: HandleTuple>(&mut self, handles: H) -> AwaitAll<'_, H> {
         AwaitAll::new(self, handles)
     }
 

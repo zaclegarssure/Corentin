@@ -296,7 +296,6 @@ impl Ids {
         }
     }
 
-
     /// Destroy an entity, allowing it to be reused.
     ///
     /// Must not be called while reserved entities are awaiting `flush()`.
@@ -434,9 +433,7 @@ struct Generation {
 
 impl Generation {
     /// meta for **pending entity**
-    const EMPTY: Generation = Generation {
-        generation: 0,
-    };
+    const EMPTY: Generation = Generation { generation: 0 };
 }
 
 #[cfg(test)]

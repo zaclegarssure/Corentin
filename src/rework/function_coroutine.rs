@@ -1,14 +1,15 @@
 use crate::rework::NewCoroutine;
 use bevy::ecs::world::World;
-use bevy::prelude::Entity;
+use oneshot::Sender;
 use std::future::Future;
+use std::mem::MaybeUninit;
 use std::pin::Pin;
 use std::task::Context;
 use std::task::Poll;
 
 use pin_project::pin_project;
 
-use super::handle::HandledResult;
+use super::id_alloc::Id;
 use super::scope::Scope;
 use super::waker;
 use super::Coroutine;
@@ -26,7 +27,8 @@ where
     world_ptr: *mut *mut World,
     shared_yield: *mut Option<WaitingReason>,
     shared_new_coro: *mut Vec<NewCoroutine>,
-    id: Entity,
+    result_sender: MaybeUninit<Sender<T>>,
+    id: Id,
 }
 
 pub trait CoroutineParamFunction<Marker, T>: Send + 'static {
@@ -59,6 +61,7 @@ where
 
         let this = self.project();
 
+        // Safety: Mec crois moi
         unsafe {
             **this.world_ptr = world;
             let res = this.future.poll(&mut cx);
@@ -71,7 +74,7 @@ where
 
             match res {
                 Poll::Ready(t) => {
-                    (*world).entity_mut(*this.id).insert(HandledResult(Some(t)));
+                    this.result_sender.assume_init_read().send(t);
 
                     drop(Box::from_raw(*this.shared_yield));
                     drop(Box::from_raw(*this.shared_new_coro));

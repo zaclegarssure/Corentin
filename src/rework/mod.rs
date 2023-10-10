@@ -1,7 +1,6 @@
-use std::default;
 use std::pin::Pin;
 
-use bevy::prelude::{Entity, World};
+use bevy::prelude::World;
 use bevy::time::Timer;
 use bevy::utils::synccell::SyncCell;
 use tinyset::SetU64;
@@ -13,10 +12,10 @@ mod executor;
 mod first;
 mod function_coroutine;
 mod handle;
+mod id_alloc;
 mod scope;
 mod tick;
 mod waker;
-mod id_alloc;
 
 // THINGS MISSING:
 // Dropping a handle should drop the coroutine
@@ -73,6 +72,8 @@ pub enum WaitingReason {
     First(SetU64),
     /// Get resumed once all coroutines have terminate
     All(SetU64),
+    /// Never get resumed, and gets cleanup instead
+    Cancel,
 }
 
 /// A heap allocated [`Coroutine`]

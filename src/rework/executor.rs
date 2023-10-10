@@ -1,12 +1,12 @@
 use bevy::time::Time;
-use std::{collections::VecDeque, ops::{IndexMut, Index}};
+use std::{collections::VecDeque, ops::Index};
 
 use bevy::{
-    prelude::{Entity, Resource, World},
+    prelude::{Resource, World},
     time::Timer,
-    utils::{HashMap, HashSet},
+    utils::HashMap,
 };
-use tinyset::{SetU32, SetU64, SetUsize};
+use tinyset::{SetU64, SetUsize};
 
 use super::{
     id_alloc::{Id, Ids},
@@ -151,9 +151,11 @@ impl Executor {
                 WaitingReason::All(handlers) => {
                     self.waiting_on_all.insert(coro_id, handlers.clone());
                     for handler in handlers.iter() {
-                        self.is_awaited_by
-                            .insert(Id::from_bits(handler), coro_id);
+                        self.is_awaited_by.insert(Id::from_bits(handler), coro_id);
                     }
+                }
+                WaitingReason::Cancel => {
+                    self.cancel(coro_id);
                 }
             },
         };

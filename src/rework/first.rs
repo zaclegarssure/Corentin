@@ -8,7 +8,7 @@ use pin_project::pin_project;
 use tinyset::SetU64;
 
 use super::{
-    handle::CoroHandle,
+    handle::{CoroHandle, HandleTuple, Status},
     scope::{CoroState, Scope},
     WaitingReason,
 };
@@ -37,16 +37,12 @@ impl<const N: usize, T: Send + Sync + 'static> Future for AwaitFirst<'_, N, T> {
     fn poll(self: Pin<&mut Self>, _cx: &mut Context) -> Poll<Self::Output> {
         let this = self.project();
         match this.state {
-            // We assume the executor will only poll it once all the coroutines have finish executing
+            // We assume the executor will only poll it once any of the coroutines have finish executing
             CoroState::Halted => {
                 *this.state = CoroState::Running;
-                // Safety: The window is open (we are getting polled) and there can be only
-                // one handle to each coroutine (no conflict possible when taking the result).
-                unsafe {
-                    for handle in this.handles.iter() {
-                        if let Some(t) = handle.try_fetch(this.scope) {
-                            return Poll::Ready(t);
-                        }
+                for h in this.handles {
+                    if let Status::Done = h.update_status() {
+                        return Poll::Ready(h.try_fetch().unwrap());
                     }
                 }
                 panic!("The executor resumed a coroutine at the wrong time, this is a bug");
@@ -54,8 +50,25 @@ impl<const N: usize, T: Send + Sync + 'static> Future for AwaitFirst<'_, N, T> {
             CoroState::Running => {
                 *this.state = CoroState::Halted;
                 let mut set = SetU64::new();
-                for h in this.handles.iter() {
-                    set.insert(h.id.to_bits());
+                let mut done = None;
+                for h in this.handles {
+                    match h.update_status() {
+                        Status::Done => {
+                            if let None = done {
+                                done = Some(h.try_fetch().unwrap());
+                            }
+                        }
+                        Status::StillWaiting(id) => {
+                            set.extend(id);
+                        }
+                        _ => {
+                            this.scope.set_waiting_reason(WaitingReason::Cancel);
+                            return Poll::Pending;
+                        }
+                    }
+                }
+                if let Some(value) = done {
+                    return Poll::Ready(value);
                 }
                 this.scope.set_waiting_reason(WaitingReason::First(set));
                 Poll::Pending
