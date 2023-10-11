@@ -27,32 +27,41 @@ use super::{
 pub struct Scope {
     id: Id,
     owner: Option<Entity>,
-    world_ptr: *const *mut World,
-    ids_ptr: *const *const Ids,
-    is_paralel: *const bool,
-    curr_node: *const usize,
+    resume_param: *const ResumeParam,
     yield_sender: GlobalSender<YieldMsg>,
     new_coro_sender: GlobalSender<NewCoroutine>,
+}
+
+pub struct ResumeParam {
+    pub(crate) world: *mut World,
+    pub(crate) ids: *const Ids,
+    pub(crate) is_paralel: bool,
+    pub(crate) curr_node: usize,
+}
+
+impl ResumeParam {
+    pub fn new() -> Self {
+        Self {
+            world: null_mut(),
+            ids: null(),
+            is_paralel: false,
+            curr_node: 0,
+        }
+    }
 }
 
 impl Scope {
     pub(crate) fn new(
         id: Id,
         owner: Option<Entity>,
-        world_ptr: *const *mut World,
-        ids_ptr: *const *const Ids,
-        is_paralel: *const bool,
-        curr_node: *const usize,
+        resume_param: *const ResumeParam,
         yield_sender: GlobalSender<YieldMsg>,
         new_coro_sender: GlobalSender<NewCoroutine>,
     ) -> Self {
         Self {
             id,
             owner,
-            world_ptr,
-            ids_ptr,
-            is_paralel,
-            curr_node,
+            resume_param,
             yield_sender,
             new_coro_sender,
         }
@@ -70,17 +79,11 @@ impl Scope {
         C: CoroutineParamFunction<Marker, T>,
         T: Sync + Send + 'static,
     {
-        let world_param = Resume::new(null_mut());
-        let ids_param = Resume::new(null());
-        let is_paralel = Resume::new(false);
-        let curr_node = Resume::new(0);
+        let resume_param = Resume::new(ResumeParam::new());
         let new_scope = Self {
             id: self.alloc_id(),
             owner,
-            world_ptr: world_param.get_raw(),
-            ids_ptr: ids_param.get_raw(),
-            is_paralel: is_paralel.get_raw(),
-            curr_node: curr_node.get_raw(),
+            resume_param: resume_param.get_raw(),
             yield_sender: self.yield_sender.clone(),
             new_coro_sender: self.new_coro_sender.clone(),
         };
@@ -90,10 +93,7 @@ impl Scope {
         let coroutine = FunctionCoroutine::new(
             new_scope,
             self.world_cell_read_only(),
-            world_param,
-            ids_param,
-            curr_node,
-            is_paralel,
+            resume_param,
             self.yield_sender.clone(),
             new_id,
             result_sender,
@@ -204,7 +204,7 @@ impl Scope {
     }
 
     pub fn is_paralel(&self) -> bool {
-        unsafe { *self.is_paralel }
+        unsafe { (*self.resume_param).is_paralel }
     }
 
     pub fn owner(&self) -> Option<Entity> {
@@ -212,7 +212,7 @@ impl Scope {
     }
 
     pub fn alloc_id(&self) -> Id {
-        unsafe { (**self.ids_ptr).allocate_id() }
+        unsafe { (*(*self.resume_param).ids).allocate_id() }
     }
 
     pub fn yield_(&mut self, msg: CoroStatus) {
@@ -228,11 +228,11 @@ impl Scope {
     }
 
     pub fn world_cell(&self) -> UnsafeWorldCell<'_> {
-        unsafe { (**self.world_ptr).as_unsafe_world_cell() }
+        unsafe { (*(*self.resume_param).world).as_unsafe_world_cell() }
     }
 
     pub fn world_cell_read_only(&self) -> UnsafeWorldCell<'_> {
-        unsafe { (**self.world_ptr).as_unsafe_world_cell_readonly() }
+        unsafe { (*(*self.resume_param).world).as_unsafe_world_cell_readonly() }
     }
 
     fn add_new_coro(&mut self, new_coro: NewCoroutine) {
@@ -246,7 +246,7 @@ impl Scope {
     }
 
     pub fn curr_node(&self) -> usize {
-        unsafe { *self.curr_node }
+        unsafe { (*self.resume_param).curr_node }
     }
 }
 

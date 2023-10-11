@@ -1,9 +1,5 @@
 use bevy::{prelude::Entity, time::Time, utils::synccell::SyncCell};
-use std::{
-    collections::VecDeque,
-    ops::Index,
-    ptr::{null, null_mut},
-};
+use std::{collections::VecDeque, ops::Index};
 
 use bevy::{
     prelude::{Resource, World},
@@ -17,7 +13,7 @@ use super::{
     global_channel::{global_channel, GlobalReceiver, GlobalSender},
     id_alloc::{Id, Ids},
     resume::Resume,
-    scope::Scope,
+    scope::{ResumeParam, Scope},
     CoroStatus, Coroutine, HeapCoro, NewCoroutine, YieldMsg,
 };
 
@@ -255,18 +251,14 @@ impl Executor {
         C: CoroutineParamFunction<Marker, T>,
         T: Sync + Send + 'static,
     {
-        let world_param = Resume::new(null_mut());
-        let ids_param = Resume::new(null());
-        let is_paralel = Resume::new(false);
-        let curr_node = Resume::new(0);
-        let new_id = self.ids.allocate_id();
+        let resume_param = Resume::new(ResumeParam::new());
+
+        let id = self.ids.allocate_id();
+
         let new_scope = Scope::new(
-            new_id,
+            id,
             owner,
-            world_param.get_raw(),
-            ids_param.get_raw(),
-            is_paralel.get_raw(),
-            curr_node.get_raw(),
+            resume_param.get_raw(),
             self.yield_channel.0.clone(),
             self.new_coro_channel.0.clone(),
         );
@@ -274,16 +266,13 @@ impl Executor {
         if let Some(c) = FunctionCoroutine::new(
             new_scope,
             world.as_unsafe_world_cell_readonly(),
-            world_param,
-            ids_param,
-            curr_node,
-            is_paralel,
+            resume_param,
             self.yield_channel.0.clone(),
-            new_id,
+            id,
             None,
             coroutine,
         ) {
-            self.add_coroutine(new_id, SyncCell::new(Box::pin(c)));
+            self.add_coroutine(id, SyncCell::new(Box::pin(c)));
         };
     }
 }

@@ -5,7 +5,7 @@ use bevy::utils::all_tuples;
 use std::future::Future;
 
 use std::pin::Pin;
-use std::ptr::null_mut;
+
 use std::task::Context;
 use std::task::Poll;
 
@@ -22,6 +22,7 @@ use super::id_alloc::Id;
 use super::id_alloc::Ids;
 use super::one_shot::Sender;
 use super::resume::Resume;
+use super::scope::ResumeParam;
 use super::scope::Scope;
 use super::waker;
 use super::Coroutine;
@@ -34,10 +35,7 @@ where
     #[pin]
     future: F::Future,
     id: Id,
-    world_param: Resume<*mut World>,
-    ids_param: Resume<*const Ids>,
-    curr_node_param: Resume<usize>,
-    is_paralel_param: Resume<bool>,
+    resume_param: Resume<ResumeParam>,
     yield_sender: GlobalSender<YieldMsg>,
     meta: CoroMeta,
     result_sender: Option<Sender<T>>,
@@ -79,15 +77,14 @@ where
         // All the pointers are valid since we get them from references, and we are never doing
         // the swap while the future is getting polled, only before and after.
         unsafe {
-            this.world_param.set(world);
-            this.ids_param.set(ids);
-            this.curr_node_param.set(curr_node);
-            this.is_paralel_param.set(false);
+            this.resume_param.set(ResumeParam {
+                world,
+                ids,
+                is_paralel: false,
+                curr_node,
+            });
 
             let res = this.future.poll(&mut cx);
-
-            this.world_param.set(null_mut());
-            this.ids_param.set(std::ptr::null());
 
             if let Poll::Ready(t) = res {
                 if let Some(sender) = this.result_sender.take() {
@@ -119,10 +116,7 @@ where
     pub(crate) fn new(
         scope: Scope,
         world_cell: UnsafeWorldCell,
-        world_param: Resume<*mut World>,
-        ids_param: Resume<*const Ids>,
-        curr_node_param: Resume<usize>,
-        is_paralel_param: Resume<bool>,
+        resume_param: Resume<ResumeParam>,
         yield_sender: GlobalSender<YieldMsg>,
         id: Id,
         result_sender: Option<Sender<T>>,
@@ -138,10 +132,7 @@ where
 
         Some(Self {
             future,
-            world_param,
-            ids_param,
-            curr_node_param,
-            is_paralel_param,
+            resume_param,
             meta,
             yield_sender,
             id,
