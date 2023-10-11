@@ -12,6 +12,7 @@ use super::{
     function_coroutine::{CoroutineParamFunction, FunctionCoroutine},
     handle::{CoroHandle, HandleTuple},
     id_alloc::{Id, Ids},
+    one_shot::channel,
     tick::{DurationFuture, NextTick},
     Coroutine, NewCoroutine, WaitingReason,
 };
@@ -123,7 +124,7 @@ impl Scope {
         C: CoroutineParamFunction<Marker, T>,
         T: Sync + Send + 'static,
     {
-        let (sender, receiver) = oneshot::channel();
+        let (sender, receiver) = channel();
         let coroutine =
             FunctionCoroutine::from_function(self, self.owner, Some(sender), coroutine)?;
         let id = self.alloc_id();

@@ -3,11 +3,11 @@ use bevy::ecs::world::World;
 
 use bevy::prelude::Entity;
 use bevy::utils::all_tuples;
-use oneshot::Sender;
-use std::boxed::Box;
 use std::future::Future;
 
 use std::pin::Pin;
+use std::ptr::null;
+use std::ptr::null_mut;
 use std::task::Context;
 use std::task::Poll;
 
@@ -18,6 +18,8 @@ use super::CoroAccess;
 use super::CoroMeta;
 
 use super::id_alloc::Ids;
+use super::one_shot::Sender;
+use super::resume::Resume;
 use super::scope::Scope;
 use super::waker;
 use super::Coroutine;
@@ -32,10 +34,10 @@ where
 {
     #[pin]
     future: F::Future,
-    world_ptr: *mut *mut World,
-    shared_yield: *mut Option<WaitingReason>,
-    shared_new_coro: *mut Vec<NewCoroutine>,
-    ids_ptr: *mut *const Ids,
+    world_ptr: Resume<*mut World>,
+    shared_yield: Resume<Option<WaitingReason>>,
+    shared_new_coro: Resume<Vec<NewCoroutine>>,
+    ids_ptr: Resume<*const Ids>,
     meta: CoroMeta,
     result_sender: Option<Sender<T>>,
 }
@@ -62,37 +64,43 @@ where
     T: Send + Sync + 'static,
     F: CoroutineParamFunction<Marker, T>,
 {
-    unsafe fn resume_unsafe(self: Pin<&mut Self>, world: *mut World, ids: &Ids) -> CoroutineResult {
+    fn resume(self: Pin<&mut Self>, world: &mut World, ids: &Ids) -> CoroutineResult {
         let waker = waker::create();
         // Dummy context
         let mut cx = Context::from_waker(&waker);
 
         let this = self.project();
 
-        // Safety: Mec crois moi
+        let world = world as *mut _;
+        let ids = ids as *const _;
+
+        // Safety: The only unsafe operations are swapping the resume arguments back and forth
+        // All the pointers are valid since we get them from references, and we are never doing
+        // the swap while the future is getting polled, only before and after.
         unsafe {
-            **this.world_ptr = world;
-            **this.ids_ptr = ids;
+            this.world_ptr.set(world);
+            this.ids_ptr.set(ids);
             let res = this.future.poll(&mut cx);
-            **this.world_ptr = std::ptr::null_mut();
-            **this.ids_ptr = std::ptr::null();
+            this.world_ptr.set(null_mut());
+            this.ids_ptr.set(std::ptr::null());
 
             let mut result = CoroutineResult {
                 result: CoroutineStatus::Done,
-                new_coro: std::mem::take(&mut **this.shared_new_coro),
+                new_coro: std::mem::take(this.shared_new_coro.get_mut()),
             };
 
             match res {
                 Poll::Ready(t) => {
                     if let Some(sender) = this.result_sender.take() {
-                        let _ = sender.send(t);
+                        sender.send_sync(t);
                     }
 
                     result
                 }
                 Poll::Pending => {
-                    result.result =
-                        CoroutineStatus::Yield((**this.shared_yield).take().expect(ERR_WRONGAWAIT));
+                    result.result = CoroutineStatus::Yield(
+                        this.shared_yield.get_mut().take().expect(ERR_WRONGAWAIT),
+                    );
                     result
                 }
             }
@@ -105,15 +113,6 @@ where
 
     fn meta(&self) -> &CoroMeta {
         &self.meta
-    }
-
-    fn cleanup(&self) {
-        unsafe {
-            drop(Box::from_raw(self.shared_yield));
-            drop(Box::from_raw(self.shared_new_coro));
-            drop(Box::from_raw(self.world_ptr));
-            drop(Box::from_raw(self.ids_ptr));
-        }
     }
 }
 
@@ -134,12 +133,18 @@ where
         };
 
         let params = F::Params::init(scope.world_cell_read_only(), &mut meta)?;
-        let world_ptr = Box::into_raw(Box::new(std::ptr::null_mut()));
-        let ids_ptr = Box::into_raw(Box::new(std::ptr::null()));
-        let shared_yield = Box::into_raw(Box::new(None));
-        let shared_new_coro = Box::into_raw(Box::default());
+        let world_ptr = Resume::new(null_mut());
+        let ids_ptr = Resume::new(null());
+        let shared_yield = Resume::new(None);
+        let shared_new_coro = Resume::new(Vec::new());
 
-        let new_scope = Scope::new(owner, world_ptr, ids_ptr, shared_yield, shared_new_coro);
+        let new_scope = Scope::new(
+            owner,
+            world_ptr.get_raw(),
+            ids_ptr.get_raw(),
+            shared_yield.get_raw(),
+            shared_new_coro.get_raw(),
+        );
         let future = f.init(new_scope, params);
 
         Some(Self {
@@ -165,12 +170,18 @@ where
         };
 
         let params = F::Params::init(world.as_unsafe_world_cell_readonly(), &mut meta)?;
-        let world_ptr = Box::into_raw(Box::new(std::ptr::null_mut()));
-        let ids_ptr = Box::into_raw(Box::new(std::ptr::null()));
-        let shared_yield = Box::into_raw(Box::new(None));
-        let shared_new_coro = Box::into_raw(Box::default());
+        let world_ptr = Resume::new(null_mut());
+        let ids_ptr = Resume::new(null());
+        let shared_yield = Resume::new(None);
+        let shared_new_coro = Resume::new(Vec::new());
 
-        let new_scope = Scope::new(owner, world_ptr, ids_ptr, shared_yield, shared_new_coro);
+        let new_scope = Scope::new(
+            owner,
+            world_ptr.get_raw(),
+            ids_ptr.get_raw(),
+            shared_yield.get_raw(),
+            shared_new_coro.get_raw(),
+        );
         let future = f.init(new_scope, params);
 
         Some(Self {

@@ -35,9 +35,7 @@ impl Executor {
 
     fn cancel(&mut self, coro_id: Id) {
         self.ids.free(coro_id);
-        if let Some(mut coro) = self.coroutines.remove(&coro_id) {
-            coro.get().cleanup();
-        }
+        self.coroutines.remove(&coro_id);
 
         if let Some(owned) = self.scope_ownership.remove(&coro_id) {
             for c in owned {
@@ -117,17 +115,13 @@ impl Executor {
 
         let coro = self.coroutines.get_mut(&coro_id).unwrap().get();
 
-        // Safety: The world pointer is valid (and exclusive) and we don't run anything
-        // concurrently on the world right now
         if !coro.as_mut().is_valid(world) {
             self.cancel(coro_id);
             return;
         }
 
-        let world = world as *mut _;
         let CoroutineResult { result, new_coro } =
-            // Safety: same as the previous one
-            unsafe { Coroutine::resume_unsafe(coro.as_mut(), world, &self.ids) };
+            Coroutine::resume(coro.as_mut(), world, &self.ids);
 
         // TODO Signals
 
@@ -187,9 +181,7 @@ impl Executor {
         ready_coro: &mut VecDeque<(Id, usize)>,
         parents: &mut ParentTable,
     ) {
-        if let Some(mut coro) = self.coroutines.remove(&coro_id) {
-            coro.get().cleanup();
-        }
+        self.coroutines.remove(&coro_id);
 
         if let Some(owned) = self.scope_ownership.remove(&coro_id) {
             for c in owned {

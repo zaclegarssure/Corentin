@@ -18,6 +18,8 @@ mod first;
 mod function_coroutine;
 mod handle;
 mod id_alloc;
+mod one_shot;
+mod resume;
 mod scope;
 mod tick;
 mod waker;
@@ -35,13 +37,7 @@ mod waker;
 /// This also means that the pointers must be valid before calling any of these functions.
 pub trait Coroutine: Send + 'static {
     /// Resume execution of this coroutine.
-    ///
-    /// # Safety:
-    /// The implementator must make sure to not perform any structural change to `world`.
-    /// basically, it should just be used as an [`UnsafeWorldCell`].
-    /// For the caller, if this is called concurrently, it must be done such that not conflicting
-    /// access to the world can be performed.
-    unsafe fn resume_unsafe(self: Pin<&mut Self>, world: *mut World, ids: &Ids) -> CoroutineResult;
+    fn resume(self: Pin<&mut Self>, world: &mut World, ids: &Ids) -> CoroutineResult;
 
     /// Return true, if this coroutine is still valid. If it is not, it should be despawned.
     /// Should be called before [`resume`], to avoid any panic.
@@ -49,10 +45,6 @@ pub trait Coroutine: Send + 'static {
 
     /// Returns this coroutine metadata
     fn meta(&self) -> &CoroMeta;
-
-    /// Cleanup any memory allocated by this coroutine, this is a quick fix
-    /// because `pin_project` does not let any custom Drop implementation.
-    fn cleanup(&self);
 }
 
 pub struct CoroMeta {

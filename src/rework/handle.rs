@@ -1,8 +1,8 @@
 use bevy::utils::all_tuples;
-use oneshot::{Receiver, TryRecvError};
+use oneshot::TryRecvError;
 use tinyset::SetU64;
 
-use super::id_alloc::Id;
+use super::{id_alloc::Id, one_shot::Receiver};
 
 /// Value representing an ongoing coroutine. Can be used to await it's result, or cancel the
 /// underlying coroutine by dropping it.
