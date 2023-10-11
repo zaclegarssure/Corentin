@@ -11,6 +11,7 @@ use tinyset::{SetU64, SetUsize};
 use self::id_alloc::{Id, Ids};
 
 mod all;
+mod commands;
 mod coro_param;
 mod executor;
 mod first;
@@ -20,7 +21,6 @@ mod id_alloc;
 mod scope;
 mod tick;
 mod waker;
-mod commands;
 
 // THINGS MISSING:
 // Dropping a scope should drop the local entities
@@ -144,12 +144,14 @@ type HeapCoro = SyncCell<Pin<Box<dyn Coroutine>>>;
 
 #[cfg(test)]
 mod test {
-    use std::{time::Instant, sync::{Mutex, Arc}};
+    use std::{
+        sync::{Arc, Mutex},
+        time::Instant,
+    };
 
-    use bevy::{time::Time, ecs::system::Command, prelude::Mut};
+    use bevy::{ecs::system::Command, prelude::Mut, time::Time};
 
-    use super::{*, executor::Executor, commands::root_coroutine, scope::Scope};
-
+    use super::{commands::root_coroutine, executor::Executor, scope::Scope, *};
 
     #[test]
     fn wait_on_tick() {
@@ -200,7 +202,6 @@ mod test {
         });
     }
 
-
     #[test]
     fn waiting_on_first() {
         let mut world = World::new();
@@ -235,7 +236,6 @@ mod test {
             }
         });
     }
-
 
     #[test]
     fn waiting_on_all() {
@@ -272,6 +272,65 @@ mod test {
             assert_eq!(*a.lock().unwrap(), 3);
             executor.tick(w);
             assert_eq!(*a.lock().unwrap(), 3);
+        });
+    }
+
+    #[test]
+    fn waiting_on_first_result() {
+        let mut world = World::new();
+        world.init_resource::<Executor>();
+        world.insert_resource(Time::new(Instant::now()));
+
+        root_coroutine(|mut fib: Scope| async move {
+            let first = fib.start(|mut s: Scope| async move {
+                loop {
+                    s.next_tick().await;
+                }
+            });
+
+            let second = fib.start(|mut s: Scope| async move {
+                for _ in 0..2 {
+                    s.next_tick().await;
+                }
+                10
+            });
+
+            let res = fib.first([first, second]).await;
+            assert_eq!(res, 10);
+        })
+        .apply(&mut world);
+
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
+            executor.tick_until_empty(w);
+        });
+    }
+
+    #[test]
+    fn waiting_on_all_result() {
+        let mut world = World::new();
+        world.init_resource::<Executor>();
+        world.insert_resource(Time::new(Instant::now()));
+
+        root_coroutine(|mut fib: Scope| async move {
+            let first = fib.start(|mut s: Scope| async move {
+                s.next_tick().await;
+                20
+            });
+
+            let second = fib.start(|mut s: Scope| async move {
+                for _ in 0..2 {
+                    s.next_tick().await;
+                }
+                10
+            });
+
+            let res = fib.all((first, second)).await;
+            assert_eq!(res, (20, 10));
+        })
+        .apply(&mut world);
+
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
+            executor.tick_until_empty(w);
         });
     }
 }

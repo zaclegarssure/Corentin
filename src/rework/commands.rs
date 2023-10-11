@@ -60,7 +60,7 @@ pub fn root_coroutine<M, C, T>(coroutine: C) -> AddRootCoroutine<M, T, C> {
 }
 
 pub fn coroutine<M, C, T>(coroutine: C) -> AddCoroutineTo<M, T, C> {
-    AddCoroutineTo{
+    AddCoroutineTo {
         coroutine,
         _phantom1: PhantomData,
         _phantom2: PhantomData,

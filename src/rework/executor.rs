@@ -1,4 +1,4 @@
-use bevy::{time::Time, utils::synccell::SyncCell};
+use bevy::time::Time;
 use std::{collections::VecDeque, ops::Index};
 
 use bevy::{
@@ -59,6 +59,12 @@ impl Executor {
             for o in others {
                 self.cancel(Id::from_bits(o));
             }
+        }
+    }
+
+    pub fn tick_until_empty(&mut self, world: &mut World) {
+        while !self.coroutines.is_empty() {
+            self.tick(world);
         }
     }
 
