@@ -1,12 +1,10 @@
-use crate::rework::NewCoroutine;
 use bevy::ecs::world::World;
 
-use bevy::prelude::Entity;
+use bevy::ecs::world::unsafe_world_cell::UnsafeWorldCell;
 use bevy::utils::all_tuples;
 use std::future::Future;
 
 use std::pin::Pin;
-use std::ptr::null;
 use std::ptr::null_mut;
 use std::task::Context;
 use std::task::Poll;
@@ -16,16 +14,17 @@ use pin_project::pin_project;
 use super::coro_param::CoroParam;
 use super::CoroAccess;
 use super::CoroMeta;
+use super::CoroStatus;
+use super::YieldMsg;
 
+use super::global_channel::GlobalSender;
+use super::id_alloc::Id;
 use super::id_alloc::Ids;
 use super::one_shot::Sender;
 use super::resume::Resume;
 use super::scope::Scope;
 use super::waker;
 use super::Coroutine;
-use super::CoroutineResult;
-use super::CoroutineStatus;
-use super::WaitingReason;
 
 #[pin_project]
 pub struct FunctionCoroutine<Marker, F, T>
@@ -34,10 +33,12 @@ where
 {
     #[pin]
     future: F::Future,
-    world_ptr: Resume<*mut World>,
-    shared_yield: Resume<Option<WaitingReason>>,
-    shared_new_coro: Resume<Vec<NewCoroutine>>,
-    ids_ptr: Resume<*const Ids>,
+    id: Id,
+    world_param: Resume<*mut World>,
+    ids_param: Resume<*const Ids>,
+    curr_node_param: Resume<usize>,
+    is_paralel_param: Resume<bool>,
+    yield_sender: GlobalSender<YieldMsg>,
     meta: CoroMeta,
     result_sender: Option<Sender<T>>,
 }
@@ -64,7 +65,7 @@ where
     T: Send + Sync + 'static,
     F: CoroutineParamFunction<Marker, T>,
 {
-    fn resume(self: Pin<&mut Self>, world: &mut World, ids: &Ids) -> CoroutineResult {
+    fn resume(self: Pin<&mut Self>, world: &mut World, ids: &Ids, curr_node: usize) {
         let waker = waker::create();
         // Dummy context
         let mut cx = Context::from_waker(&waker);
@@ -78,31 +79,25 @@ where
         // All the pointers are valid since we get them from references, and we are never doing
         // the swap while the future is getting polled, only before and after.
         unsafe {
-            this.world_ptr.set(world);
-            this.ids_ptr.set(ids);
+            this.world_param.set(world);
+            this.ids_param.set(ids);
+            this.curr_node_param.set(curr_node);
+            this.is_paralel_param.set(false);
+
             let res = this.future.poll(&mut cx);
-            this.world_ptr.set(null_mut());
-            this.ids_ptr.set(std::ptr::null());
 
-            let mut result = CoroutineResult {
-                result: CoroutineStatus::Done,
-                new_coro: std::mem::take(this.shared_new_coro.get_mut()),
-            };
+            this.world_param.set(null_mut());
+            this.ids_param.set(std::ptr::null());
 
-            match res {
-                Poll::Ready(t) => {
-                    if let Some(sender) = this.result_sender.take() {
-                        sender.send_sync(t);
-                    }
-
-                    result
+            if let Poll::Ready(t) = res {
+                if let Some(sender) = this.result_sender.take() {
+                    sender.send_sync(t);
                 }
-                Poll::Pending => {
-                    result.result = CoroutineStatus::Yield(
-                        this.shared_yield.get_mut().take().expect(ERR_WRONGAWAIT),
-                    );
-                    result
-                }
+                this.yield_sender.send_sync(YieldMsg {
+                    id: *this.id,
+                    node: curr_node,
+                    status: CoroStatus::Done,
+                });
             }
         }
     }
@@ -121,77 +116,36 @@ where
     T: Send + Sync + 'static,
     F: CoroutineParamFunction<Marker, T>,
 {
-    pub fn from_function(
-        scope: &Scope,
-        owner: Option<Entity>,
-        sender: Option<Sender<T>>,
+    pub(crate) fn new(
+        scope: Scope,
+        world_cell: UnsafeWorldCell,
+        world_param: Resume<*mut World>,
+        ids_param: Resume<*const Ids>,
+        curr_node_param: Resume<usize>,
+        is_paralel_param: Resume<bool>,
+        yield_sender: GlobalSender<YieldMsg>,
+        id: Id,
+        result_sender: Option<Sender<T>>,
         f: F,
     ) -> Option<Self> {
         let mut meta = CoroMeta {
-            owner,
+            owner: scope.owner(),
             access: CoroAccess::default(),
         };
 
-        let params = F::Params::init(scope.world_cell_read_only(), &mut meta)?;
-        let world_ptr = Resume::new(null_mut());
-        let ids_ptr = Resume::new(null());
-        let shared_yield = Resume::new(None);
-        let shared_new_coro = Resume::new(Vec::new());
-
-        let new_scope = Scope::new(
-            owner,
-            world_ptr.get_raw(),
-            ids_ptr.get_raw(),
-            shared_yield.get_raw(),
-            shared_new_coro.get_raw(),
-        );
-        let future = f.init(new_scope, params);
+        let params = F::Params::init(world_cell, &mut meta)?;
+        let future = f.init(scope, params);
 
         Some(Self {
             future,
-            world_ptr,
-            shared_yield,
-            shared_new_coro,
-            ids_ptr,
+            world_param,
+            ids_param,
+            curr_node_param,
+            is_paralel_param,
             meta,
-            result_sender: sender,
-        })
-    }
-
-    pub fn from_world(
-        world: &mut World,
-        owner: Option<Entity>,
-        sender: Option<Sender<T>>,
-        f: F,
-    ) -> Option<Self> {
-        let mut meta = CoroMeta {
-            owner,
-            access: CoroAccess::default(),
-        };
-
-        let params = F::Params::init(world.as_unsafe_world_cell_readonly(), &mut meta)?;
-        let world_ptr = Resume::new(null_mut());
-        let ids_ptr = Resume::new(null());
-        let shared_yield = Resume::new(None);
-        let shared_new_coro = Resume::new(Vec::new());
-
-        let new_scope = Scope::new(
-            owner,
-            world_ptr.get_raw(),
-            ids_ptr.get_raw(),
-            shared_yield.get_raw(),
-            shared_new_coro.get_raw(),
-        );
-        let future = f.init(new_scope, params);
-
-        Some(Self {
-            future,
-            world_ptr,
-            shared_yield,
-            shared_new_coro,
-            ids_ptr,
-            meta,
-            result_sender: sender,
+            yield_sender,
+            id,
+            result_sender,
         })
     }
 }

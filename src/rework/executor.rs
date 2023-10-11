@@ -1,5 +1,9 @@
-use bevy::time::Time;
-use std::{collections::VecDeque, ops::Index};
+use bevy::{prelude::Entity, time::Time, utils::synccell::SyncCell};
+use std::{
+    collections::VecDeque,
+    ops::Index,
+    ptr::{null, null_mut},
+};
 
 use bevy::{
     prelude::{Resource, World},
@@ -9,11 +13,15 @@ use bevy::{
 use tinyset::{SetU64, SetUsize};
 
 use super::{
+    function_coroutine::{CoroutineParamFunction, FunctionCoroutine},
+    global_channel::{global_channel, GlobalReceiver, GlobalSender},
     id_alloc::{Id, Ids},
-    Coroutine, CoroutineResult, CoroutineStatus, HeapCoro, NewCoroutine, WaitingReason,
+    resume::Resume,
+    scope::Scope,
+    CoroStatus, Coroutine, HeapCoro, NewCoroutine, YieldMsg,
 };
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct Executor {
     ids: Ids,
     coroutines: HashMap<Id, HeapCoro>,
@@ -23,11 +31,32 @@ pub struct Executor {
     waiting_on_first: HashMap<Id, SetU64>,
     scope_ownership: HashMap<Id, SetU64>,
     is_awaited_by: HashMap<Id, Id>,
+    yield_channel: (GlobalSender<YieldMsg>, GlobalReceiver<YieldMsg>),
+    new_coro_channel: (GlobalSender<NewCoroutine>, GlobalReceiver<NewCoroutine>),
 }
 
+impl Default for Executor {
+    fn default() -> Self {
+        Self {
+            ids: Default::default(),
+            coroutines: Default::default(),
+            waiting_on_tick: Default::default(),
+            waiting_on_time: Default::default(),
+            waiting_on_all: Default::default(),
+            waiting_on_first: Default::default(),
+            scope_ownership: Default::default(),
+            is_awaited_by: Default::default(),
+            yield_channel: global_channel(),
+            new_coro_channel: global_channel(),
+        }
+    }
+}
+
+// Safety: Mec crois moi
+unsafe impl Sync for Executor {}
+
 impl Executor {
-    pub fn add_coroutine(&mut self, coroutine: HeapCoro) {
-        let id = self.ids.allocate_id();
+    pub fn add_coroutine(&mut self, id: Id, coroutine: HeapCoro) {
         let prev = self.coroutines.insert(id, coroutine);
         self.waiting_on_tick.push_back(id);
         debug_assert!(prev.is_none());
@@ -120,56 +149,57 @@ impl Executor {
             return;
         }
 
-        let CoroutineResult { result, new_coro } =
-            Coroutine::resume(coro.as_mut(), world, &self.ids);
+        Coroutine::resume(coro.as_mut(), world, &self.ids, coro_node);
 
         // TODO Signals
 
-        for NewCoroutine {
+        while let Some(NewCoroutine {
             id,
+            ran_after,
             coroutine,
-            is_owned_by_scope,
+            is_owned_by,
             should_start_now,
-        } in new_coro
+        }) = unsafe { self.new_coro_channel.1.try_recv_sync() }
         {
             self.coroutines.insert(id, coroutine);
 
-            if is_owned_by_scope {
+            if let Some(parent) = is_owned_by {
                 self.scope_ownership
-                    .entry(coro_id)
+                    .entry(parent)
                     .or_default()
                     .insert(id.to_bits());
             }
 
             if should_start_now {
-                let next_node = parents.add_child(coro_node, id);
+                let next_node = parents.add_child(ran_after, id);
                 ready_coro.push_back((id, next_node));
             }
         }
 
-        match result {
-            CoroutineStatus::Done => {
-                self.mark_as_done(coro_id, coro_node, ready_coro, parents);
+        let YieldMsg { id, node, status } =
+            unsafe { self.yield_channel.1.try_recv_sync().unwrap() };
+
+        match status {
+            CoroStatus::Done => {
+                self.mark_as_done(id, node, ready_coro, parents);
             }
-            CoroutineStatus::Yield(yield_msg) => match yield_msg {
-                WaitingReason::Tick => self.waiting_on_tick.push_back(coro_id),
-                WaitingReason::Duration(d) => self.waiting_on_time.push_back((coro_id, d)),
-                WaitingReason::First(handlers) => {
-                    self.waiting_on_first.insert(coro_id, handlers.clone());
-                    for handler in handlers.iter() {
-                        self.is_awaited_by.insert(Id::from_bits(handler), coro_id);
-                    }
+            CoroStatus::Tick => self.waiting_on_tick.push_back(id),
+            CoroStatus::Duration(d) => self.waiting_on_time.push_back((id, d)),
+            CoroStatus::First(handlers) => {
+                self.waiting_on_first.insert(id, handlers.clone());
+                for handler in handlers.iter() {
+                    self.is_awaited_by.insert(Id::from_bits(handler), id);
                 }
-                WaitingReason::All(handlers) => {
-                    self.waiting_on_all.insert(coro_id, handlers.clone());
-                    for handler in handlers.iter() {
-                        self.is_awaited_by.insert(Id::from_bits(handler), coro_id);
-                    }
+            }
+            CoroStatus::All(handlers) => {
+                self.waiting_on_all.insert(id, handlers.clone());
+                for handler in handlers.iter() {
+                    self.is_awaited_by.insert(Id::from_bits(handler), id);
                 }
-                WaitingReason::Cancel => {
-                    self.cancel(coro_id);
-                }
-            },
+            }
+            CoroStatus::Cancel => {
+                self.cancel(id);
+            }
         };
     }
 
@@ -214,6 +244,47 @@ impl Executor {
                 }
             }
         }
+    }
+
+    pub fn add_function_coroutine<Marker: 'static, T, C>(
+        &mut self,
+        owner: Option<Entity>,
+        world: &mut World,
+        coroutine: C,
+    ) where
+        C: CoroutineParamFunction<Marker, T>,
+        T: Sync + Send + 'static,
+    {
+        let world_param = Resume::new(null_mut());
+        let ids_param = Resume::new(null());
+        let is_paralel = Resume::new(false);
+        let curr_node = Resume::new(0);
+        let new_id = self.ids.allocate_id();
+        let new_scope = Scope::new(
+            new_id,
+            owner,
+            world_param.get_raw(),
+            ids_param.get_raw(),
+            is_paralel.get_raw(),
+            curr_node.get_raw(),
+            self.yield_channel.0.clone(),
+            self.new_coro_channel.0.clone(),
+        );
+
+        if let Some(c) = FunctionCoroutine::new(
+            new_scope,
+            world.as_unsafe_world_cell_readonly(),
+            world_param,
+            ids_param,
+            curr_node,
+            is_paralel,
+            self.yield_channel.0.clone(),
+            new_id,
+            None,
+            coroutine,
+        ) {
+            self.add_coroutine(new_id, SyncCell::new(Box::pin(c)));
+        };
     }
 }
 

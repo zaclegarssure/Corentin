@@ -9,7 +9,7 @@ use pin_project::pin_project;
 use super::{
     handle::{HandleTuple, Status},
     scope::{CoroState, Scope},
-    WaitingReason,
+    CoroStatus,
 };
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
@@ -51,11 +51,11 @@ impl<H: HandleTuple> Future for AwaitAll<'_, H> {
                 match this.handlers.update_status() {
                     Status::Done => Poll::Ready(this.handlers.try_fetch().unwrap()),
                     Status::StillWaiting(ids) => {
-                        this.scope.set_waiting_reason(WaitingReason::All(ids));
+                        this.scope.yield_(CoroStatus::All(ids));
                         Poll::Pending
                     }
                     _ => {
-                        this.scope.set_waiting_reason(WaitingReason::Cancel);
+                        this.scope.yield_(CoroStatus::Cancel);
                         Poll::Pending
                     }
                 }

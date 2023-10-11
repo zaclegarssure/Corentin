@@ -10,7 +10,7 @@ use tinyset::SetU64;
 use super::{
     handle::{CoroHandle, HandleTuple, Status},
     scope::{CoroState, Scope},
-    WaitingReason,
+    CoroStatus,
 };
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
@@ -62,7 +62,7 @@ impl<const N: usize, T: Send + Sync + 'static> Future for AwaitFirst<'_, N, T> {
                             set.extend(id);
                         }
                         _ => {
-                            this.scope.set_waiting_reason(WaitingReason::Cancel);
+                            this.scope.yield_(CoroStatus::Cancel);
                             return Poll::Pending;
                         }
                     }
@@ -70,7 +70,7 @@ impl<const N: usize, T: Send + Sync + 'static> Future for AwaitFirst<'_, N, T> {
                 if let Some(value) = done {
                     return Poll::Ready(value);
                 }
-                this.scope.set_waiting_reason(WaitingReason::First(set));
+                this.scope.yield_(CoroStatus::First(set));
                 Poll::Pending
             }
         }

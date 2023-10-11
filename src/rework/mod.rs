@@ -16,6 +16,7 @@ mod coro_param;
 mod executor;
 mod first;
 mod function_coroutine;
+mod global_channel;
 mod handle;
 mod id_alloc;
 mod one_shot;
@@ -37,7 +38,8 @@ mod waker;
 /// This also means that the pointers must be valid before calling any of these functions.
 pub trait Coroutine: Send + 'static {
     /// Resume execution of this coroutine.
-    fn resume(self: Pin<&mut Self>, world: &mut World, ids: &Ids) -> CoroutineResult;
+    /// All resuls are communicated back via channels.
+    fn resume(self: Pin<&mut Self>, world: &mut World, ids: &Ids, curr_node: usize);
 
     /// Return true, if this coroutine is still valid. If it is not, it should be despawned.
     /// Should be called before [`resume`], to avoid any panic.
@@ -93,30 +95,47 @@ impl CoroAccess {
     }
 }
 
-pub struct CoroutineResult {
-    result: CoroutineStatus,
-    new_coro: Vec<NewCoroutine>,
-    // TODO: triggered_signals?
-}
-
 /// A newly spawned [`Coroutine`] and how it should be handled by the [`Executor`](executor).
 pub struct NewCoroutine {
     id: Id,
+    ran_after: usize,
     coroutine: HeapCoro,
-    is_owned_by_scope: bool,
+    is_owned_by: Option<Id>,
     should_start_now: bool,
 }
 
-/// The status of the [`Coroutine`] after being resumed. If it is [`CoroutineStatus::Yield`], then
-/// the coroutine should be resumed again once the condition is fullfiled. If it is [`Done`] then
-/// the coroutine has finish execution and should not be resumed again. Doing so will panic.
-pub enum CoroutineStatus {
-    Yield(WaitingReason),
-    Done,
+impl NewCoroutine {
+    pub fn new(
+        id: Id,
+        ran_after: usize,
+        coroutine: impl Coroutine,
+        is_owned_by: Option<Id>,
+        should_start_now: bool,
+    ) -> Self {
+        Self {
+            id,
+            ran_after,
+            coroutine: SyncCell::new(Box::pin(coroutine)),
+            is_owned_by,
+            should_start_now,
+        }
+    }
 }
 
-/// The condition for a [`Coroutine`] to be resumed.
-pub enum WaitingReason {
+pub struct YieldMsg {
+    id: Id,
+    node: usize,
+    status: CoroStatus,
+}
+
+impl YieldMsg {
+    pub fn new(id: Id, node: usize, status: CoroStatus) -> Self {
+        Self { id, node, status }
+    }
+}
+
+/// The status of a [`Coroutine`] after being resumed.
+pub enum CoroStatus {
     /// Get resumed after one tick
     Tick,
     /// Get resumed once the duration is reached
@@ -125,6 +144,8 @@ pub enum WaitingReason {
     First(SetU64),
     /// Get resumed once all coroutines have terminate
     All(SetU64),
+    /// Has finished execution
+    Done,
     /// Never get resumed, and gets cleanup instead
     Cancel,
 }

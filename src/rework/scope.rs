@@ -1,48 +1,114 @@
-use std::time::Duration;
+use std::{
+    ptr::{null, null_mut},
+    time::Duration,
+};
 
 use bevy::{
     ecs::world::unsafe_world_cell::UnsafeWorldCell,
     prelude::{Entity, World},
-    utils::synccell::SyncCell,
 };
 
 use super::{
     all::AwaitAll,
     first::AwaitFirst,
     function_coroutine::{CoroutineParamFunction, FunctionCoroutine},
+    global_channel::GlobalSender,
     handle::{CoroHandle, HandleTuple},
     id_alloc::{Id, Ids},
-    one_shot::channel,
+    one_shot::{channel, Sender},
+    resume::Resume,
     tick::{DurationFuture, NextTick},
-    Coroutine, NewCoroutine, WaitingReason,
+    CoroStatus, NewCoroutine, YieldMsg,
 };
 
 /// The first parameter of any [`Coroutine`] It is used to spawn sub-coroutines, yield back to the
 /// scheduler, queue commands and so on. It is the most unsafe part of this library, but once
 /// proper coroutines are implemented in Rust, this would not be the case for the most part.
 pub struct Scope {
+    id: Id,
     owner: Option<Entity>,
     world_ptr: *const *mut World,
     ids_ptr: *const *const Ids,
-    shared_yield: *mut Option<WaitingReason>,
-    shared_new_coro: *mut Vec<NewCoroutine>,
+    is_paralel: *const bool,
+    curr_node: *const usize,
+    yield_sender: GlobalSender<YieldMsg>,
+    new_coro_sender: GlobalSender<NewCoroutine>,
 }
 
 impl Scope {
     pub(crate) fn new(
+        id: Id,
         owner: Option<Entity>,
         world_ptr: *const *mut World,
         ids_ptr: *const *const Ids,
-        shared_yield: *mut Option<WaitingReason>,
-        shared_new_coro: *mut Vec<NewCoroutine>,
+        is_paralel: *const bool,
+        curr_node: *const usize,
+        yield_sender: GlobalSender<YieldMsg>,
+        new_coro_sender: GlobalSender<NewCoroutine>,
     ) -> Self {
         Self {
+            id,
             owner,
             world_ptr,
             ids_ptr,
-            shared_yield,
-            shared_new_coro,
+            is_paralel,
+            curr_node,
+            yield_sender,
+            new_coro_sender,
         }
+    }
+
+    fn build_coroutine<Marker: 'static, T, C>(
+        &mut self,
+        owner: Option<Entity>,
+        start_now: bool,
+        parent_scope: Option<Id>,
+        result_sender: Option<Sender<T>>,
+        coroutine: C,
+    ) -> Option<Id>
+    where
+        C: CoroutineParamFunction<Marker, T>,
+        T: Sync + Send + 'static,
+    {
+        let world_param = Resume::new(null_mut());
+        let ids_param = Resume::new(null());
+        let is_paralel = Resume::new(false);
+        let curr_node = Resume::new(0);
+        let new_scope = Self {
+            id: self.alloc_id(),
+            owner,
+            world_ptr: world_param.get_raw(),
+            ids_ptr: ids_param.get_raw(),
+            is_paralel: is_paralel.get_raw(),
+            curr_node: curr_node.get_raw(),
+            yield_sender: self.yield_sender.clone(),
+            new_coro_sender: self.new_coro_sender.clone(),
+        };
+
+        let new_id = new_scope.id;
+
+        let coroutine = FunctionCoroutine::new(
+            new_scope,
+            self.world_cell_read_only(),
+            world_param,
+            ids_param,
+            curr_node,
+            is_paralel,
+            self.yield_sender.clone(),
+            new_id,
+            result_sender,
+            coroutine,
+        )?;
+
+        self.add_new_coro(NewCoroutine::new(
+            new_id,
+            self.curr_node(),
+            coroutine,
+            parent_scope,
+            start_now,
+        ));
+
+        Some(new_id)
     }
 
     /// Returns a future that resolve once all of the underlying coroutine finishes.
@@ -90,16 +156,11 @@ impl Scope {
     ///
     /// Note: If the coroutine is invalid (with conflicting parameters for instance), this function
     /// has no effects.
-    pub fn start_local<Marker: 'static, T, C>(&mut self, coroutine: C)
+    pub fn start_local<Marker: 'static, T, C>(&mut self, _coroutine: C)
     where
         C: CoroutineParamFunction<Marker, T>,
         T: Sync + Send + 'static,
     {
-        if let Some(coroutine) = FunctionCoroutine::from_function(self, self.owner, None, coroutine)
-        {
-            let id = self.alloc_id();
-            self.add_new_coro(coroutine, id, true, true);
-        }
     }
 
     /// Start the `coroutine` when reaching the next `await`, and returns a [`CoroHandle`] to it.
@@ -124,11 +185,8 @@ impl Scope {
         C: CoroutineParamFunction<Marker, T>,
         T: Sync + Send + 'static,
     {
-        let (sender, receiver) = channel();
-        let coroutine =
-            FunctionCoroutine::from_function(self, self.owner, Some(sender), coroutine)?;
-        let id = self.alloc_id();
-        self.add_new_coro(coroutine, id, false, true);
+        let (result_sender, receiver) = channel();
+        let id = self.build_coroutine(None, true, Some(self.id), Some(result_sender), coroutine)?;
         Some(CoroHandle::Waiting { id, receiver })
     }
 
@@ -142,58 +200,53 @@ impl Scope {
         C: CoroutineParamFunction<Marker, T>,
         T: Sync + Send + 'static,
     {
-        if let Some(coroutine) = FunctionCoroutine::from_function(self, self.owner, None, coroutine)
-        {
-            let id = self.alloc_id();
-            self.add_new_coro(coroutine, id, false, true);
-        }
+        self.build_coroutine(None, true, None, None, coroutine);
     }
 
-    pub fn owner(&self) -> Entity {
-        self.owner()
+    pub fn is_paralel(&self) -> bool {
+        unsafe { *self.is_paralel }
+    }
+
+    pub fn owner(&self) -> Option<Entity> {
+        self.owner
     }
 
     pub fn alloc_id(&self) -> Id {
         unsafe { (**self.ids_ptr).allocate_id() }
     }
 
-    /// Check if the shared_zone is accessible, and panic otherwise
-    fn check_shared(&self) {
-        //todo!()
-    }
+    pub fn yield_(&mut self, msg: CoroStatus) {
+        let msg = YieldMsg::new(self.id, self.curr_node(), msg);
 
-    pub fn set_waiting_reason(&mut self, reason: WaitingReason) {
-        self.check_shared();
-        unsafe {
-            *self.shared_yield = Some(reason);
+        if self.is_paralel() {
+            self.yield_sender.send(msg);
+        } else {
+            unsafe {
+                self.yield_sender.send_sync(msg);
+            }
         }
     }
 
     pub fn world_cell(&self) -> UnsafeWorldCell<'_> {
-        self.check_shared();
         unsafe { (**self.world_ptr).as_unsafe_world_cell() }
     }
 
     pub fn world_cell_read_only(&self) -> UnsafeWorldCell<'_> {
-        self.check_shared();
         unsafe { (**self.world_ptr).as_unsafe_world_cell_readonly() }
     }
 
-    fn add_new_coro(
-        &mut self,
-        coro: impl Coroutine,
-        id: Id,
-        is_owned_by_scope: bool,
-        should_start_now: bool,
-    ) {
-        unsafe {
-            (*self.shared_new_coro).push(NewCoroutine {
-                id,
-                coroutine: SyncCell::new(Box::pin(coro)),
-                is_owned_by_scope,
-                should_start_now,
-            })
+    fn add_new_coro(&mut self, new_coro: NewCoroutine) {
+        if self.is_paralel() {
+            self.new_coro_sender.send(new_coro);
+        } else {
+            unsafe {
+                self.new_coro_sender.send_sync(new_coro);
+            }
         }
+    }
+
+    pub fn curr_node(&self) -> usize {
+        unsafe { *self.curr_node }
     }
 }
 

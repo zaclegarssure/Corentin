@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use super::scope::CoroState;
 use super::scope::Scope;
-use super::WaitingReason;
+use super::CoroStatus;
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct NextTick<'a> {
@@ -46,7 +46,7 @@ impl Future for NextTick<'_> {
             }
             CoroState::Running => {
                 self.state = CoroState::Halted;
-                self.scope.set_waiting_reason(WaitingReason::Tick);
+                self.scope.yield_(CoroStatus::Tick);
                 Poll::Pending
             }
         }
@@ -82,8 +82,8 @@ impl Future for DurationFuture<'_> {
             }
             CoroState::Running => {
                 self.state = CoroState::Halted;
-                let status = WaitingReason::Duration(Timer::new(self.duration, TimerMode::Once));
-                self.scope.set_waiting_reason(status);
+                let status = CoroStatus::Duration(Timer::new(self.duration, TimerMode::Once));
+                self.scope.yield_(status);
                 Poll::Pending
             }
         }

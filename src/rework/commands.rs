@@ -1,11 +1,10 @@
 use bevy::ecs::system::{Command, EntityCommand};
-use bevy::utils::synccell::SyncCell;
 use std::marker::PhantomData;
 
 use bevy::prelude::{Entity, World};
 
 use super::executor::Executor;
-use super::function_coroutine::{CoroutineParamFunction, FunctionCoroutine};
+use super::function_coroutine::CoroutineParamFunction;
 
 pub struct AddRootCoroutine<Marker, T, C> {
     coroutine: C,
@@ -27,11 +26,7 @@ where
 {
     fn apply(self, owner: Entity, world: &mut World) {
         world.resource_scope::<Executor, ()>(|world, mut executor| {
-            if let Some(coroutine) =
-                FunctionCoroutine::from_world(world, Some(owner), None, self.coroutine)
-            {
-                executor.add_coroutine(SyncCell::new(Box::pin(coroutine)));
-            }
+            executor.add_function_coroutine(Some(owner), world, self.coroutine);
         });
     }
 }
@@ -44,9 +39,7 @@ where
 {
     fn apply(self, world: &mut World) {
         world.resource_scope::<Executor, ()>(|w, mut executor| {
-            if let Some(coroutine) = FunctionCoroutine::from_world(w, None, None, self.coroutine) {
-                executor.add_coroutine(SyncCell::new(Box::pin(coroutine)));
-            }
+            executor.add_function_coroutine(None, w, self.coroutine);
         });
     }
 }
