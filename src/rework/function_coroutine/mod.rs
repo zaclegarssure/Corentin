@@ -11,21 +11,30 @@ use std::task::Poll;
 
 use pin_project::pin_project;
 
+use self::resume::Resume;
+use self::scope::ResumeParam;
+use self::once_channel::Sender;
+use self::scope::Scope;
+
 use super::coro_param::CoroParam;
 use super::CoroAccess;
 use super::CoroMeta;
-use super::CoroStatus;
-use super::YieldMsg;
 
-use super::global_channel::GlobalSender;
+use super::executor::global_channel::GlobalSender;
+use super::executor::msg::CoroStatus;
+use super::executor::msg::YieldMsg;
 use super::id_alloc::Id;
 use super::id_alloc::Ids;
-use super::one_shot::Sender;
-use super::resume::Resume;
-use super::scope::ResumeParam;
-use super::scope::Scope;
-use super::waker;
 use super::Coroutine;
+
+pub mod await_first;
+pub mod await_all;
+pub mod await_time;
+pub mod handle;
+pub mod scope;
+pub mod once_channel;
+pub mod resume;
+pub mod await_signal;
 
 #[pin_project]
 pub struct FunctionCoroutine<Marker, F, T>
@@ -90,11 +99,11 @@ where
                 if let Some(sender) = this.result_sender.take() {
                     sender.send_sync(t);
                 }
-                this.yield_sender.send_sync(YieldMsg {
-                    id: *this.id,
-                    node: curr_node,
-                    status: CoroStatus::Done,
-                });
+                this.yield_sender.send_sync(YieldMsg::new (
+                    *this.id,
+                    curr_node,
+                    CoroStatus::Done,
+                ));
             }
         }
     }
@@ -106,6 +115,24 @@ where
     fn meta(&self) -> &CoroMeta {
         &self.meta
     }
+}
+
+mod waker {
+    use std::task::{RawWaker, RawWakerVTable, Waker};
+
+    pub fn create() -> Waker {
+        // Safety: The waker points to a vtable with functions that do nothing. Doing
+        // nothing is memory-safe.
+        unsafe { Waker::from_raw(RAW_WAKER) }
+    }
+
+    const RAW_WAKER: RawWaker = RawWaker::new(std::ptr::null(), &VTABLE);
+    const VTABLE: RawWakerVTable = RawWakerVTable::new(clone, do_nothing, do_nothing, do_nothing);
+
+    unsafe fn clone(_: *const ()) -> RawWaker {
+        RAW_WAKER
+    }
+    unsafe fn do_nothing(_: *const ()) {}
 }
 
 impl<Marker: 'static, F, T> FunctionCoroutine<Marker, F, T>
@@ -165,3 +192,10 @@ macro_rules! impl_coro_function {
 }
 
 all_tuples!(impl_coro_function, 0, 16, P);
+
+
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum CoroState {
+    Halted,
+    Running,
+}

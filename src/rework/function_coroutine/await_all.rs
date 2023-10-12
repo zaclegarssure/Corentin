@@ -8,8 +8,7 @@ use pin_project::pin_project;
 
 use super::{
     handle::{HandleTuple, Status},
-    scope::{CoroState, Scope},
-    CoroStatus,
+    CoroStatus, Scope, CoroState,
 };
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]

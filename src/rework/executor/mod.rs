@@ -8,14 +8,15 @@ use bevy::{
 };
 use tinyset::{SetU64, SetUsize};
 
+use self::{global_channel::{GlobalSender, GlobalReceiver, global_channel}, msg::{YieldMsg, NewCoroutine, CoroStatus, EmitMsg}};
+
 use super::{
-    function_coroutine::{CoroutineParamFunction, FunctionCoroutine},
-    global_channel::{global_channel, GlobalReceiver, GlobalSender},
-    id_alloc::{Id, Ids},
-    resume::Resume,
-    scope::{ResumeParam, Scope},
-    CoroStatus, Coroutine, HeapCoro, NewCoroutine, YieldMsg,
+    function_coroutine::{CoroutineParamFunction, FunctionCoroutine, scope::{ResumeParam, Scope}, resume::Resume},
+    id_alloc::{Id, Ids}, HeapCoro, Coroutine,
 };
+
+pub mod global_channel;
+pub mod msg;
 
 #[derive(Resource)]
 pub struct Executor {
@@ -29,6 +30,7 @@ pub struct Executor {
     is_awaited_by: HashMap<Id, Id>,
     yield_channel: (GlobalSender<YieldMsg>, GlobalReceiver<YieldMsg>),
     new_coro_channel: (GlobalSender<NewCoroutine>, GlobalReceiver<NewCoroutine>),
+    signal_channel: (GlobalSender<EmitMsg>, GlobalReceiver<EmitMsg>),
 }
 
 impl Default for Executor {
@@ -44,11 +46,13 @@ impl Default for Executor {
             is_awaited_by: Default::default(),
             yield_channel: global_channel(),
             new_coro_channel: global_channel(),
+            signal_channel: global_channel(),
         }
     }
 }
 
-// Safety: Mec crois moi
+// SAFETY: The [`Executor`] can only be accessed througth an exclusive
+// reference, therefore it never has to be synced.
 unsafe impl Sync for Executor {}
 
 impl Executor {
@@ -261,6 +265,7 @@ impl Executor {
             resume_param.get_raw(),
             self.yield_channel.0.clone(),
             self.new_coro_channel.0.clone(),
+            self.signal_channel.0.clone(),
         );
 
         if let Some(c) = FunctionCoroutine::new(

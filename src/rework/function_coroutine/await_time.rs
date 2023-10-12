@@ -7,9 +7,9 @@ use std::task::Context;
 use std::task::Poll;
 use std::time::Duration;
 
-use super::scope::CoroState;
-use super::scope::Scope;
+use super::CoroState;
 use super::CoroStatus;
+use super::Scope;
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct NextTick<'a> {

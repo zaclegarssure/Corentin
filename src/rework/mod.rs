@@ -3,27 +3,17 @@ use std::pin::Pin;
 use bevy::ecs::component::ComponentId;
 use bevy::prelude::Entity;
 use bevy::prelude::World;
-use bevy::time::Timer;
 use bevy::utils::synccell::SyncCell;
 use bevy::utils::HashMap;
-use tinyset::{SetU64, SetUsize};
+use tinyset::SetUsize;
 
-use self::id_alloc::{Id, Ids};
+use self::id_alloc::Ids;
 
-mod all;
 mod commands;
 mod coro_param;
 mod executor;
-mod first;
 mod function_coroutine;
-mod global_channel;
-mod handle;
 mod id_alloc;
-mod one_shot;
-mod resume;
-mod scope;
-mod tick;
-mod waker;
 
 // THINGS MISSING:
 // Dropping a scope should drop the local entities
@@ -95,60 +85,6 @@ impl CoroAccess {
     }
 }
 
-/// A newly spawned [`Coroutine`] and how it should be handled by the [`Executor`](executor).
-pub struct NewCoroutine {
-    id: Id,
-    ran_after: usize,
-    coroutine: HeapCoro,
-    is_owned_by: Option<Id>,
-    should_start_now: bool,
-}
-
-impl NewCoroutine {
-    pub fn new(
-        id: Id,
-        ran_after: usize,
-        coroutine: impl Coroutine,
-        is_owned_by: Option<Id>,
-        should_start_now: bool,
-    ) -> Self {
-        Self {
-            id,
-            ran_after,
-            coroutine: SyncCell::new(Box::pin(coroutine)),
-            is_owned_by,
-            should_start_now,
-        }
-    }
-}
-
-pub struct YieldMsg {
-    id: Id,
-    node: usize,
-    status: CoroStatus,
-}
-
-impl YieldMsg {
-    pub fn new(id: Id, node: usize, status: CoroStatus) -> Self {
-        Self { id, node, status }
-    }
-}
-
-/// The status of a [`Coroutine`] after being resumed.
-pub enum CoroStatus {
-    /// Get resumed after one tick
-    Tick,
-    /// Get resumed once the duration is reached
-    Duration(Timer),
-    /// Get resumed once any of the coroutine has terminate
-    First(SetU64),
-    /// Get resumed once all coroutines have terminate
-    All(SetU64),
-    /// Has finished execution
-    Done,
-    /// Never get resumed, and gets cleanup instead
-    Cancel,
-}
 
 /// A heap allocated [`Coroutine`]
 /// It is pinned since most coroutine are implemented using [`Future`]. [`SyncCell`] is used to
@@ -164,7 +100,7 @@ mod test {
 
     use bevy::{ecs::system::Command, prelude::Mut, time::Time};
 
-    use super::{commands::root_coroutine, executor::Executor, scope::Scope, *};
+    use super::{commands::root_coroutine, executor::Executor, *, function_coroutine::scope::Scope};
 
     #[test]
     fn wait_on_tick() {

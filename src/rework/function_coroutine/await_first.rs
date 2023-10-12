@@ -9,8 +9,7 @@ use tinyset::SetU64;
 
 use super::{
     handle::{CoroHandle, HandleTuple, Status},
-    scope::{CoroState, Scope},
-    CoroStatus,
+    CoroStatus, Scope, CoroState,
 };
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]

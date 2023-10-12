@@ -2,6 +2,9 @@ use bevy::{ecs::world::unsafe_world_cell::UnsafeWorldCell, utils::all_tuples};
 
 use super::CoroMeta;
 
+pub mod component;
+pub mod signals;
+
 /// A function taking a scope and 0 or many [`CoroParam`]
 /// can be trurned into a [`Coroutine`](super::Coroutine).
 pub trait CoroParam: Sized {

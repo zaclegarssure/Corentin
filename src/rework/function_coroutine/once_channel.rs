@@ -9,7 +9,7 @@ use std::{mem::MaybeUninit, ptr::NonNull};
 /// The idea is that coroutines should be aware if they are currently running on 1 or multiple
 /// thread, and therefore choose the appropriate way to communicate with the rest of the world
 
-pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
+pub fn once_channel<T>() -> (Sender<T>, Receiver<T>) {
     let (tx, rx) = oneshot::channel();
     let (t, r) = sync_channel();
     (

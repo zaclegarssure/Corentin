@@ -1,6 +1,9 @@
 use std::sync::mpsc::{self, Receiver as AsyncRec};
 use std::{collections::VecDeque, ptr::NonNull, sync::mpsc::Sender as AsyncSender};
 
+/// Create a pair of sender/receiver, for a hybrid mpsc channel. The channel is "hybrid" in the
+/// sense that it can be used to communicate either via atomics operation, or using a simple shared
+/// mutable queue.
 pub fn global_channel<T>() -> (GlobalSender<T>, GlobalReceiver<T>) {
     let (tx, rx) = mpsc::channel();
     let (t, r) = sync_channel();
