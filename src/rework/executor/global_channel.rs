@@ -1,86 +1,43 @@
-use std::sync::mpsc::{self, Receiver as AsyncRec};
-use std::{collections::VecDeque, ptr::NonNull, sync::mpsc::Sender as AsyncSender};
+use std::ptr::NonNull;
 
-/// Create a pair of sender/receiver, for a hybrid mpsc channel. The channel is "hybrid" in the
-/// sense that it can be used to communicate either via atomics operation, or using a simple shared
-/// mutable queue.
-pub fn global_channel<T>() -> (GlobalSender<T>, GlobalReceiver<T>) {
-    let (tx, rx) = mpsc::channel();
-    let (t, r) = sync_channel();
-    (
-        GlobalSender {
-            single: t,
-            multi: tx,
-        },
-        GlobalReceiver {
-            single: r,
-            multi: rx,
-        },
-    )
-}
-
-fn sync_channel<T>() -> (SyncSender<T>, SyncRec<T>) {
-    let channel_ptr = Box::into_raw(Box::new(GlobalQueue::new()));
+/// Returns a pair of sender/receiver for a shared mutable queue.
+/// The receiver can be cheaply clone, and the channel is dropped
+/// once the sender is dropped. There are no synchronization, nor checks,
+/// so all operations are marked as unsafe.
+pub fn shared_queue<T>() -> (SyncSender<T>, SyncRec<T>) {
+    let channel_ptr = Box::into_raw(Box::default());
 
     let channel_ptr = unsafe { NonNull::new_unchecked(channel_ptr) };
     (SyncSender { channel_ptr }, SyncRec { channel_ptr })
 }
 
-pub struct GlobalSender<T> {
-    single: SyncSender<T>,
-    multi: AsyncSender<T>,
-}
-
-impl<T> Clone for GlobalSender<T> {
-    fn clone(&self) -> Self {
-        Self {
-            single: self.single.clone(),
-            multi: self.multi.clone(),
-        }
+impl<T> SyncSender<T> {
+    /// Send a value througth the channel.
+    /// # SAFETY:
+    /// The caller must make sure the channel is still alive, and that
+    /// no other concurrent operations are taking place.
+    pub unsafe fn send(&self, message: T) {
+        let mut channel_ptr = self.channel_ptr;
+        let channel = channel_ptr.as_mut();
+        channel.push(message);
     }
 }
 
-impl<T> GlobalSender<T> {
-    pub unsafe fn send_sync(&self, message: T) {
-        let mut channel_ptr = self.single.channel_ptr;
-        let channel = unsafe { channel_ptr.as_mut() };
-        channel.queue.push_back(message);
-    }
-
-    pub fn send(&self, message: T) {
-        let _ = self.multi.send(message);
-    }
-}
-
-pub struct GlobalReceiver<T> {
-    single: SyncRec<T>,
-    multi: AsyncRec<T>,
-}
-
-impl<T> GlobalReceiver<T> {
-    pub unsafe fn try_recv_sync(&self) -> Option<T> {
-        let mut channel_ptr = self.single.channel_ptr;
-        let channel = unsafe { channel_ptr.as_mut() };
-        channel.queue.pop_front()
-    }
-
-    pub fn try_recv(&self) -> Option<T> {
-        let mut channel_ptr = self.single.channel_ptr;
-        let channel = unsafe { channel_ptr.as_mut() };
-        match channel.queue.pop_front() {
-            Some(val) => Some(val),
-            None => match self.multi.try_recv() {
-                Ok(val) => Some(val),
-                Err(std::sync::mpsc::TryRecvError::Empty) => None,
-                _ => unreachable!(),
-            },
-        }
+impl<T: 'static> SyncRec<T> {
+    /// Consume all values in the channel.
+    /// # SAFETY:
+    /// The caller must make sure the channel is still alive, and that
+    /// no other concurrent operations are taking place.
+    pub unsafe fn recv_all(&mut self) -> impl Iterator<Item = T> {
+        let mut channel_ptr = self.channel_ptr;
+        let channel = channel_ptr.as_mut();
+        channel.drain(..)
     }
 }
 
 #[derive(Copy)]
-struct SyncSender<T> {
-    channel_ptr: NonNull<GlobalQueue<T>>,
+pub struct SyncSender<T> {
+    channel_ptr: NonNull<Vec<T>>,
 }
 
 impl<T> Clone for SyncSender<T> {
@@ -91,31 +48,20 @@ impl<T> Clone for SyncSender<T> {
     }
 }
 
+pub struct SyncRec<T> {
+    channel_ptr: NonNull<Vec<T>>,
+}
+
 impl<T> Drop for SyncRec<T> {
     fn drop(&mut self) {
-        // Safety: blablabla
+        // Safety: Only the receiver can drop the channel, and there is only one receiver.
+        // hence, the pointer is still valid.
         unsafe { drop(Box::from_raw(self.channel_ptr.as_ptr())) }
     }
 }
 
-unsafe impl<T: Send> Send for GlobalSender<T> {}
-unsafe impl<T: Send> Send for GlobalReceiver<T> {}
-
-struct SyncRec<T> {
-    channel_ptr: NonNull<GlobalQueue<T>>,
-}
-
-struct GlobalQueue<T> {
-    queue: VecDeque<T>,
-}
-
-impl<T> GlobalQueue<T> {
-    fn new() -> Self {
-        Self {
-            queue: VecDeque::new(),
-        }
-    }
-}
+unsafe impl<T: Send> Send for SyncRec<T> {}
+unsafe impl<T: Send> Send for SyncSender<T> {}
 
 #[cfg(test)]
 mod test {
@@ -123,10 +69,10 @@ mod test {
 
     #[test]
     pub fn single_threaded_snd_rec() {
-        let (tx, rx) = global_channel();
+        let (tx, mut rx) = shared_queue();
         unsafe {
-            tx.send_sync(1);
-            assert_eq!(rx.try_recv_sync(), Some(1));
+            tx.send(1);
+            assert_eq!(rx.recv_all().next(), Some(1));
         }
     }
 }

@@ -1,8 +1,8 @@
 use bevy::prelude::Entity;
-use bevy::{ecs::component::ComponentId, time::Timer, utils::synccell::SyncCell};
+use bevy::{ecs::component::ComponentId, time::Timer};
 use tinyset::SetU64;
 
-use crate::rework::{id_alloc::Id, Coroutine, HeapCoro};
+use crate::rework::{id_alloc::Id, HeapCoro};
 
 /// A newly spawned [`Coroutine`] and how it should be handled by the [`Executor`](executor).
 pub struct NewCoroutine {
@@ -52,6 +52,6 @@ pub struct EmitMsg {
 /// of the `Signal<S, T>` and the [`Entity`] on which it is defined.
 /// Note that signals can also be global, hence have no `owner`.
 pub struct SignalId {
-    signal_type: ComponentId,
-    owner: Option<Entity>,
+    pub signal_type: ComponentId,
+    pub owner: Option<Entity>,
 }

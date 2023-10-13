@@ -7,6 +7,10 @@ use bevy::utils::synccell::SyncCell;
 use bevy::utils::HashMap;
 use tinyset::SetUsize;
 
+use self::executor::global_channel::SyncSender;
+use self::executor::msg::EmitMsg;
+use self::executor::msg::NewCoroutine;
+use self::executor::msg::YieldMsg;
 use self::id_alloc::Ids;
 
 mod commands;
@@ -22,14 +26,18 @@ mod id_alloc;
 
 /// A coroutine is a form of state machine. It can get resumed, and returns on which condition it
 /// should be resumed again.
-///
-/// Note: Ideally we would use [`UnsafeWorldCell`](bevy::ecs::world::UnsafeWorldCell) here,
-/// but we can't due to lifetime issue, so we're back to using raw pointers letssgo
-/// This also means that the pointers must be valid before calling any of these functions.
 pub trait Coroutine: Send + 'static {
     /// Resume execution of this coroutine.
     /// All resuls are communicated back via channels.
-    fn resume(self: Pin<&mut Self>, world: &mut World, ids: &Ids, curr_node: usize);
+    fn resume(
+        self: Pin<&mut Self>,
+        world: &mut World,
+        ids: &Ids,
+        curr_node: usize,
+        yield_channel: SyncSender<YieldMsg>,
+        next_coro_channel: SyncSender<NewCoroutine>,
+        emit_signal: SyncSender<EmitMsg>,
+    );
 
     /// Return true, if this coroutine is still valid. If it is not, it should be despawned.
     /// Should be called before [`resume`], to avoid any panic.
@@ -85,7 +93,6 @@ impl CoroAccess {
     }
 }
 
-
 /// A heap allocated [`Coroutine`]
 /// It is pinned since most coroutine are implemented using [`Future`]. [`SyncCell`] is used to
 /// make them [`Sync`] while being only [`Send`].
@@ -100,7 +107,9 @@ mod test {
 
     use bevy::{ecs::system::Command, prelude::Mut, time::Time};
 
-    use super::{commands::root_coroutine, executor::Executor, *, function_coroutine::scope::Scope};
+    use super::{
+        commands::root_coroutine, executor::Executor, function_coroutine::scope::Scope, *,
+    };
 
     #[test]
     fn wait_on_tick() {

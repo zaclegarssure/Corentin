@@ -11,30 +11,32 @@ use std::task::Poll;
 
 use pin_project::pin_project;
 
+use self::once_channel::Sender;
 use self::resume::Resume;
 use self::scope::ResumeParam;
-use self::once_channel::Sender;
 use self::scope::Scope;
 
 use super::coro_param::CoroParam;
 use super::CoroAccess;
 use super::CoroMeta;
 
-use super::executor::global_channel::GlobalSender;
+use super::executor::global_channel::SyncSender;
 use super::executor::msg::CoroStatus;
+use super::executor::msg::EmitMsg;
+use super::executor::msg::NewCoroutine;
 use super::executor::msg::YieldMsg;
 use super::id_alloc::Id;
 use super::id_alloc::Ids;
 use super::Coroutine;
 
-pub mod await_first;
 pub mod await_all;
+pub mod await_first;
+pub mod await_signal;
 pub mod await_time;
 pub mod handle;
-pub mod scope;
 pub mod once_channel;
 pub mod resume;
-pub mod await_signal;
+pub mod scope;
 
 #[pin_project]
 pub struct FunctionCoroutine<Marker, F, T>
@@ -45,7 +47,6 @@ where
     future: F::Future,
     id: Id,
     resume_param: Resume<ResumeParam>,
-    yield_sender: GlobalSender<YieldMsg>,
     meta: CoroMeta,
     result_sender: Option<Sender<T>>,
 }
@@ -72,7 +73,15 @@ where
     T: Send + Sync + 'static,
     F: CoroutineParamFunction<Marker, T>,
 {
-    fn resume(self: Pin<&mut Self>, world: &mut World, ids: &Ids, curr_node: usize) {
+    fn resume(
+        self: Pin<&mut Self>,
+        world: &mut World,
+        ids: &Ids,
+        curr_node: usize,
+        yield_channel: SyncSender<YieldMsg>,
+        next_coro_channel: SyncSender<NewCoroutine>,
+        emit_signal: SyncSender<EmitMsg>,
+    ) {
         let waker = waker::create();
         // Dummy context
         let mut cx = Context::from_waker(&waker);
@@ -89,21 +98,21 @@ where
             this.resume_param.set(ResumeParam {
                 world,
                 ids,
-                is_paralel: false,
                 curr_node,
+                yield_sender: Some(yield_channel.clone()),
+                new_coro_sender: Some(next_coro_channel),
+                emit_sender: Some(emit_signal),
             });
 
             let res = this.future.poll(&mut cx);
+
+            this.resume_param.set(ResumeParam::new());
 
             if let Poll::Ready(t) = res {
                 if let Some(sender) = this.result_sender.take() {
                     sender.send_sync(t);
                 }
-                this.yield_sender.send_sync(YieldMsg::new (
-                    *this.id,
-                    curr_node,
-                    CoroStatus::Done,
-                ));
+                yield_channel.send(YieldMsg::new(*this.id, curr_node, CoroStatus::Done));
             }
         }
     }
@@ -144,7 +153,6 @@ where
         scope: Scope,
         world_cell: UnsafeWorldCell,
         resume_param: Resume<ResumeParam>,
-        yield_sender: GlobalSender<YieldMsg>,
         id: Id,
         result_sender: Option<Sender<T>>,
         f: F,
@@ -161,7 +169,6 @@ where
             future,
             resume_param,
             meta,
-            yield_sender,
             id,
             result_sender,
         })
@@ -192,7 +199,6 @@ macro_rules! impl_coro_function {
 }
 
 all_tuples!(impl_coro_function, 0, 16, P);
-
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum CoroState {

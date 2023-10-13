@@ -1,14 +1,3 @@
-use std::marker::PhantomData;
-
-use bevy::{
-    ecs::{component::ComponentId, world::unsafe_world_cell::UnsafeWorldCell},
-    prelude::{Component, Entity, Mut, World},
-};
-
-use crate::rework::{CoroMeta, SourceId, function_coroutine::scope::Scope};
-
-use super::CoroParam;
-
 ///// A readonly reference to a [`Component`] from the owning [`Entity`].
 /////
 ///// Note that a Coroutine with such parameter will be canceled if the entity does not have the

@@ -8,11 +8,19 @@ use bevy::{
 };
 use tinyset::{SetU64, SetUsize};
 
-use self::{global_channel::{GlobalSender, GlobalReceiver, global_channel}, msg::{YieldMsg, NewCoroutine, CoroStatus, EmitMsg}};
+use self::{
+    global_channel::{shared_queue, SyncRec, SyncSender},
+    msg::{CoroStatus, EmitMsg, NewCoroutine, YieldMsg},
+};
 
 use super::{
-    function_coroutine::{CoroutineParamFunction, FunctionCoroutine, scope::{ResumeParam, Scope}, resume::Resume},
-    id_alloc::{Id, Ids}, HeapCoro, Coroutine,
+    function_coroutine::{
+        resume::Resume,
+        scope::{ResumeParam, Scope},
+        CoroutineParamFunction, FunctionCoroutine,
+    },
+    id_alloc::{Id, Ids},
+    Coroutine, HeapCoro,
 };
 
 pub mod global_channel;
@@ -28,9 +36,9 @@ pub struct Executor {
     waiting_on_first: HashMap<Id, SetU64>,
     scope_ownership: HashMap<Id, SetU64>,
     is_awaited_by: HashMap<Id, Id>,
-    yield_channel: (GlobalSender<YieldMsg>, GlobalReceiver<YieldMsg>),
-    new_coro_channel: (GlobalSender<NewCoroutine>, GlobalReceiver<NewCoroutine>),
-    signal_channel: (GlobalSender<EmitMsg>, GlobalReceiver<EmitMsg>),
+    yield_channel: (SyncSender<YieldMsg>, SyncRec<YieldMsg>),
+    new_coro_channel: (SyncSender<NewCoroutine>, SyncRec<NewCoroutine>),
+    signal_channel: (SyncSender<EmitMsg>, SyncRec<EmitMsg>),
 }
 
 impl Default for Executor {
@@ -44,9 +52,9 @@ impl Default for Executor {
             waiting_on_first: Default::default(),
             scope_ownership: Default::default(),
             is_awaited_by: Default::default(),
-            yield_channel: global_channel(),
-            new_coro_channel: global_channel(),
-            signal_channel: global_channel(),
+            yield_channel: shared_queue(),
+            new_coro_channel: shared_queue(),
+            signal_channel: shared_queue(),
         }
     }
 }
@@ -149,17 +157,25 @@ impl Executor {
             return;
         }
 
-        Coroutine::resume(coro.as_mut(), world, &self.ids, coro_node);
+        Coroutine::resume(
+            coro.as_mut(),
+            world,
+            &self.ids,
+            coro_node,
+            self.yield_channel.0.clone(),
+            self.new_coro_channel.0.clone(),
+            self.signal_channel.0.clone(),
+        );
 
         // TODO Signals
 
-        while let Some(NewCoroutine {
+        for NewCoroutine {
             id,
             ran_after,
             coroutine,
             is_owned_by,
             should_start_now,
-        }) = unsafe { self.new_coro_channel.1.try_recv_sync() }
+        } in unsafe { self.new_coro_channel.1.recv_all() }
         {
             self.coroutines.insert(id, coroutine);
 
@@ -177,7 +193,7 @@ impl Executor {
         }
 
         let YieldMsg { id, node, status } =
-            unsafe { self.yield_channel.1.try_recv_sync().unwrap() };
+            unsafe { self.yield_channel.1.recv_all().next().unwrap() };
 
         match status {
             CoroStatus::Done => {
@@ -259,20 +275,12 @@ impl Executor {
 
         let id = self.ids.allocate_id();
 
-        let new_scope = Scope::new(
-            id,
-            owner,
-            resume_param.get_raw(),
-            self.yield_channel.0.clone(),
-            self.new_coro_channel.0.clone(),
-            self.signal_channel.0.clone(),
-        );
+        let new_scope = Scope::new(id, owner, resume_param.get_raw());
 
         if let Some(c) = FunctionCoroutine::new(
             new_scope,
             world.as_unsafe_world_cell_readonly(),
             resume_param,
-            self.yield_channel.0.clone(),
             id,
             None,
             coroutine,

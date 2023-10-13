@@ -6,7 +6,6 @@ use crate::rework::id_alloc::Id;
 
 use super::once_channel::Receiver;
 
-
 /// Value representing an ongoing coroutine. Can be used to await it's result, or cancel the
 /// underlying coroutine by dropping it.
 pub enum CoroHandle<T> {
