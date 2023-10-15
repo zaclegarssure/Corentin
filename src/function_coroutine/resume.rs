@@ -21,19 +21,22 @@ impl<T> Resume<T> {
     }
 
     /// Set the value.
-    /// # Safety: This must not be called while the [`Future`] is using this value.
+    /// # Safety
+    /// This must not be called while the [`Future`] is using this value.
     pub unsafe fn set(&mut self, value: T) {
         *self.value.as_mut() = value;
     }
 
     /// Get the value.
-    /// # Safety: This must not be called while the [`Future`] is using this value.
+    /// # Safety
+    /// This must not be called while the [`Future`] is using this value.
     pub unsafe fn get(&self) -> &T {
         self.value.as_ref()
     }
 
     /// Get the value mutably.
-    /// # Safety: This must not be called while the [`Future`] is using this value.
+    /// # Safety
+    /// This must not be called while the [`Future`] is using this value.
     pub unsafe fn get_mut(&mut self) -> &mut T {
         self.value.as_mut()
     }

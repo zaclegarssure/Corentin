@@ -13,7 +13,7 @@ pub fn shared_queue<T>() -> (SyncSender<T>, SyncRec<T>) {
 
 impl<T> SyncSender<T> {
     /// Send a value througth the channel.
-    /// # SAFETY:
+    /// # Safety
     /// The caller must make sure the channel is still alive, and that
     /// no other concurrent operations are taking place.
     pub unsafe fn send(&self, message: T) {
@@ -25,7 +25,7 @@ impl<T> SyncSender<T> {
 
 impl<T: 'static> SyncRec<T> {
     /// Consume all values in the channel.
-    /// # SAFETY:
+    /// # Safety
     /// The caller must make sure the channel is still alive, and that
     /// no other concurrent operations are taking place.
     pub unsafe fn recv_all(&mut self) -> impl Iterator<Item = T> {

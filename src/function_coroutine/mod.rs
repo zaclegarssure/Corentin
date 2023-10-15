@@ -39,6 +39,14 @@ pub mod once_channel;
 pub mod resume;
 pub mod scope;
 
+pub mod prelude {
+    #[doc(hidden)]
+    pub use super::scope::Scope;
+
+    #[doc(hidden)]
+    pub use super::handle::CoroHandle;
+}
+
 #[pin_project]
 pub struct FunctionCoroutine<Marker, F, T>
 where

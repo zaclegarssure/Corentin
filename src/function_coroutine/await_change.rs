@@ -4,7 +4,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::rework::executor::msg::{CoroStatus, SignalId};
+use crate::executor::msg::{CoroStatus, SignalId};
 
 use super::{scope::Scope, CoroState};
 

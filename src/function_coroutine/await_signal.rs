@@ -7,7 +7,7 @@ use std::{
 
 use pin_project::pin_project;
 
-use crate::rework::{
+use crate::{
     coro_param::signals::{Signal, SignalType},
     executor::msg::{CoroStatus, SignalId},
 };

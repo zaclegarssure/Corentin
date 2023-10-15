@@ -53,7 +53,7 @@ impl<const N: usize, T: Send + Sync + 'static> Future for AwaitFirst<'_, N, T> {
                 for h in this.handles {
                     match h.update_status() {
                         Status::Done => {
-                            if let None = done {
+                            if done.is_none() {
                                 done = Some(h.try_fetch().unwrap());
                             }
                         }

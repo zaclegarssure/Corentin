@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use bevy::{prelude::*, sprite::MaterialMesh2dBundle};
 use corentin::prelude::*;
 
@@ -24,10 +26,25 @@ fn setup_scene(
             ..default()
         })
         .add(coroutine(
-            |mut fib: Fib, mut transform: Wr<Transform>| async move {
+            |mut s: Scope, mut transform: Wr<Transform>| async move {
                 loop {
-                    let dt = fib.next_tick().await;
-                    transform.get_mut(&fib).translation.x += 100.0 * dt.as_secs_f32();
+                    let dt = s.next_tick().await;
+                    transform.get_mut(&mut s).translation.x += 100.0 * dt.as_secs_f32();
+                }
+            },
+        ))
+        .add(coroutine(
+            |mut s: Scope, transform: Rd<Transform>| async move {
+                let mut i = 0;
+                let original_x = transform.get(&s).translation.x;
+                loop {
+                    s.duration(Duration::from_secs(1)).await;
+                    i += 1;
+                    println!(
+                        "After {} seconds, we moved {} to the right",
+                        i,
+                        transform.get(&s).translation.x - original_x
+                    );
                 }
             },
         ));

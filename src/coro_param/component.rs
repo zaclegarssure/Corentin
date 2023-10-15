@@ -5,9 +5,7 @@ use bevy::{
     prelude::{Component, Entity, Mut},
 };
 
-use crate::rework::{
-    executor::msg::SignalId, function_coroutine::scope::Scope, CoroMeta, SourceId,
-};
+use crate::{executor::msg::SignalId, function_coroutine::scope::Scope, CoroMeta, SourceId};
 
 use super::{on_change::ChangeTracker, CoroParam};
 
@@ -17,7 +15,6 @@ use super::{on_change::ChangeTracker, CoroParam};
 /// relevent component (or does not exist).
 pub struct Rd<T: Component> {
     owner: Entity,
-    id: ComponentId,
     _phantom: PhantomData<T>,
 }
 
@@ -32,7 +29,6 @@ impl<T: Component> CoroParam for Rd<T> {
 
         Some(Self {
             owner,
-            id,
             _phantom: PhantomData,
         })
     }

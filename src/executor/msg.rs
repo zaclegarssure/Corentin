@@ -2,7 +2,7 @@ use bevy::prelude::Entity;
 use bevy::{ecs::component::ComponentId, time::Timer};
 use tinyset::SetU64;
 
-use crate::rework::{id_alloc::Id, HeapCoro};
+use crate::{id_alloc::Id, HeapCoro};
 
 /// A newly spawned [`Coroutine`] and how it should be handled by the [`Executor`](executor).
 pub struct NewCoroutine {

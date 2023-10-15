@@ -7,39 +7,47 @@ An experimental reactive coroutine plugin for [`Bevy`](https://github.com/bevyen
 </div>
 
 ```rust
-async fn count(mut fib: Fib) {
-  let mut i = 0;
+async fn on_hit(mut scope: Scope, hp: Rd<Hp>, on_hp_change: OnChange<Hp>) {
   loop {
-    fib.duration(Duration::from_secs(1)).await;
-    i += 1;
-    println!("This coroutine has started since {} seconds", i);
+    let prev = hp.get(&scope);
+    on_hp_change.observe(&mut scope).await;
+
+    let curr = hp.get(&scope);
+    if curr < prev {
+        println!("Lost {} hp(s)", prev - curr);
+    }
   }
 }
 ```
 
 # Objectives
-This crate aims to provide a nice and lightweight implementation of reactive coroutines
-for Bevy. Those would be useful for scripting like logic, chain of actions over time, and so on.
+This crate aims to provide a nice and lightweight implementation of reactive
+coroutines for Bevy. Those are useful for scripting like logic, chain of
+actions over time, complex scheduling and so on.
 
 # Warning
-Most features are not implemented yet and those that are available are pretty slow (and probably buggy as well).
+This crate is under heavy development, none of the APIs are stable yet.
 
 # Overview
-* Define coroutines as async functions, that can be added to any entity.
+* Define coroutines as async functions.
 * Coroutines can yield and be resumed after a certain condition:
   This includes, waiting for some time, waiting until a component is mutated and so on.
 * Coroutines are structured: they can spawn sub-coroutines, and wait until all of them
-  terminates (`par_and`) or until one of them terminates (`par_or`). This also includes
+  terminates (`all`) or until one of them terminates (`first`). This also includes
   automatic cancellation.
 
-# Example
+## Example
 TODO
 
-# Features to implement soon
- * Reading, writing and reacting to regular bevy events.
+## Features to implement soon
  * Using `Commands` to queue structural mutations and await them.
- * Other form of structured operations.
- * Exclusive coroutines, that can access the whole World
+ * More forms of inter-coroutine communication, using `Signals`, `Producers` and `Receivers`.
+ * The ability to run systems from coroutines, useful to define complex schedules.
+ * More coroutine parameters, such as resources, queries and bevy events.
+
+## Multithreading
+For now the executor runs on a single thread, but ultimatly it should be
+possible to run coroutines in parallel when needed.
 
 # Contributions
 It's a bit early to accept contributions right now, but if you're interested, don't hesitate to play around with this crate and share your ideas.

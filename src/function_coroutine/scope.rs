@@ -9,7 +9,7 @@ use bevy::{
     utils::synccell::SyncCell,
 };
 
-use crate::rework::{
+use crate::{
     executor::{
         global_channel::SyncSender,
         msg::{EmitMsg, NewCoroutine, SignalId},
@@ -43,6 +43,12 @@ pub struct ResumeParam {
     pub(crate) yield_sender: Option<CoroStatus>,
     pub(crate) new_coro_sender: Option<SyncSender<NewCoroutine>>,
     pub(crate) emit_sender: Option<SyncSender<EmitMsg>>,
+}
+
+impl Default for ResumeParam {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ResumeParam {

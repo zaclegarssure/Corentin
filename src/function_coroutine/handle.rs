@@ -2,7 +2,7 @@ use bevy::utils::all_tuples;
 use oneshot::TryRecvError;
 use tinyset::SetU64;
 
-use crate::rework::id_alloc::Id;
+use crate::id_alloc::Id;
 
 use super::once_channel::OnceRec;
 

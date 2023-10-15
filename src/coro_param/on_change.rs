@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use bevy::{ecs::world::unsafe_world_cell::UnsafeWorldCell, prelude::Component};
 
-use crate::rework::{
+use crate::{
     executor::msg::SignalId,
     function_coroutine::{await_change::AwaitChange, scope::Scope},
     CoroMeta,
@@ -13,6 +13,12 @@ use super::CoroParam;
 #[derive(Component)]
 pub struct ChangeTracker<T: Component> {
     _phantom: PhantomData<T>,
+}
+
+impl<T: Component> Default for ChangeTracker<T> {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<T: Component> ChangeTracker<T> {

@@ -6,6 +6,14 @@ pub mod component;
 pub mod on_change;
 pub mod signals;
 
+pub mod prelude {
+    #[doc(hidden)]
+    pub use super::component::{Rd, Wr};
+
+    #[doc(hidden)]
+    pub use super::on_change::{ChangeTracker, OnChange};
+}
+
 /// A function taking a scope and 0 or many [`CoroParam`]
 /// can be trurned into a [`Coroutine`](super::Coroutine).
 pub trait CoroParam: Sized {
