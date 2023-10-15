@@ -126,8 +126,14 @@ where
         }
     }
 
-    fn is_valid(&self, _world: &World) -> bool {
-        true
+    fn is_valid(&self, world: &World) -> bool {
+        if let Some(sender) = &self.result_sender {
+            if !sender.is_alive() {
+                return false;
+            }
+        }
+
+        return F::Params::is_valid(world.as_unsafe_world_cell_readonly(), &self.meta);
     }
 
     fn meta(&self) -> &CoroMeta {

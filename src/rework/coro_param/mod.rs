@@ -11,6 +11,10 @@ pub trait CoroParam: Sized {
     /// Initialize this parameter, and update the metadata.
     /// The world can only be used to read metadata.
     fn init(world: UnsafeWorldCell<'_>, coro_meta: &mut CoroMeta) -> Option<Self>;
+
+    /// Return true iff this parameter is still valid.
+    /// The world can only be used to read metadata.
+    fn is_valid(world: UnsafeWorldCell<'_>, coro_meta: &CoroMeta) -> bool;
 }
 
 macro_rules! impl_coro_param {
@@ -22,6 +26,10 @@ macro_rules! impl_coro_param {
 
                 Some(($($param,)*))
 
+            }
+
+            fn is_valid(world: UnsafeWorldCell<'_>, coro_meta: &CoroMeta) -> bool {
+                true $(&& $param::is_valid(world, coro_meta))*
             }
         }
 

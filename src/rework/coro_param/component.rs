@@ -34,6 +34,16 @@ impl<T: Component> CoroParam for Rd<T> {
             _phantom: PhantomData,
         })
     }
+
+    fn is_valid(world: UnsafeWorldCell<'_>, coro_meta: &CoroMeta) -> bool {
+        if let Some(owner) = coro_meta.owner {
+            if let Some(entity) = world.get_entity(owner) {
+                return entity.contains::<T>();
+            }
+        }
+
+        false
+    }
 }
 
 impl<T: Component> Rd<T> {
@@ -76,6 +86,16 @@ impl<T: Component> CoroParam for Wr<T> {
             id,
             owner,
         })
+    }
+
+    fn is_valid(world: UnsafeWorldCell<'_>, coro_meta: &CoroMeta) -> bool {
+        if let Some(owner) = coro_meta.owner {
+            if let Some(entity) = world.get_entity(owner) {
+                return entity.contains::<T>();
+            }
+        }
+
+        false
     }
 }
 
