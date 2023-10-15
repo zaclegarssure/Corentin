@@ -12,7 +12,7 @@ use bevy::{
 use crate::rework::{
     executor::{
         global_channel::SyncSender,
-        msg::{EmitMsg, NewCoroutine},
+        msg::{EmitMsg, NewCoroutine, SignalId},
     },
     id_alloc::{Id, Ids},
 };
@@ -79,8 +79,13 @@ impl ResumeParam {
         }
     }
 
-    pub fn emit_signal(&mut self, msg: EmitMsg) {
-        unsafe { self.emit_sender.as_mut().unwrap().send(msg) }
+    pub fn emit_signal(&mut self, id: SignalId) {
+        unsafe {
+            self.emit_sender.as_mut().unwrap().send(EmitMsg {
+                id,
+                by: self.curr_node,
+            })
+        }
     }
 
     pub fn curr_node(&self) -> usize {

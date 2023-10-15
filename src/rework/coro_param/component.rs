@@ -5,9 +5,11 @@ use bevy::{
     prelude::{Component, Entity, Mut},
 };
 
-use crate::rework::{function_coroutine::scope::Scope, CoroMeta, SourceId};
+use crate::rework::{
+    executor::msg::SignalId, function_coroutine::scope::Scope, CoroMeta, SourceId,
+};
 
-use super::CoroParam;
+use super::{on_change::ChangeTracker, CoroParam};
 
 /// A readonly reference to a [`Component`] from the owning [`Entity`].
 ///
@@ -114,8 +116,22 @@ impl<T: Component> Wr<T> {
         value
     }
 
-    pub fn get_mut<'a>(&'a mut self, scope: &'a Scope) -> Mut<'a, T> {
+    // TODO Should ideally only borrow scope immutably
+    pub fn get_mut<'a>(&'a mut self, scope: &'a mut Scope) -> Mut<'a, T> {
         unsafe {
+            let entity = scope
+                .resume_param()
+                .world_cell()
+                .get_entity(self.owner)
+                .unwrap();
+
+            if entity.contains::<ChangeTracker<T>>() {
+                scope.resume_param_mut().emit_signal(SignalId {
+                    signal_type: self.id,
+                    owner: Some(self.owner),
+                });
+            }
+
             scope
                 .resume_param()
                 .world_cell()

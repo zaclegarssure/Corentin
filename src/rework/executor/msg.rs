@@ -36,6 +36,8 @@ pub enum CoroStatus {
     First(SetU64),
     /// Get resumed once all coroutines have terminate
     All(SetU64),
+    /// Get resumed once the signal is triggered
+    Signal(SignalId),
     /// Has finished execution
     Done,
     /// Never get resumed, and gets cleanup instead
@@ -44,13 +46,14 @@ pub enum CoroStatus {
 
 /// The msg notifying that a [`Signal`] was emitted.
 pub struct EmitMsg {
-    id: SignalId,
-    by: usize,
+    pub id: SignalId,
+    pub by: usize,
 }
 
 /// The Id of a signal is the concatenation of the component id
 /// of the `Signal<S, T>` and the [`Entity`] on which it is defined.
 /// Note that signals can also be global, hence have no `owner`.
+#[derive(Clone, Copy, Hash, PartialEq, Eq)]
 pub struct SignalId {
     pub signal_type: ComponentId,
     pub owner: Option<Entity>,

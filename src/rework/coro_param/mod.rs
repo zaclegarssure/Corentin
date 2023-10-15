@@ -3,6 +3,7 @@ use bevy::{ecs::world::unsafe_world_cell::UnsafeWorldCell, utils::all_tuples};
 use super::CoroMeta;
 
 pub mod component;
+pub mod on_change;
 pub mod signals;
 
 /// A function taking a scope and 0 or many [`CoroParam`]

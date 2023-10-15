@@ -30,6 +30,7 @@ use super::id_alloc::Ids;
 use super::Coroutine;
 
 pub mod await_all;
+pub mod await_change;
 pub mod await_first;
 pub mod await_signal;
 pub mod await_time;

@@ -10,7 +10,7 @@ use tinyset::{SetU64, SetUsize};
 
 use self::{
     global_channel::{shared_queue, SyncRec, SyncSender},
-    msg::{CoroStatus, EmitMsg, NewCoroutine},
+    msg::{CoroStatus, EmitMsg, NewCoroutine, SignalId},
 };
 
 use super::{
@@ -34,6 +34,7 @@ pub struct Executor {
     waiting_on_time: VecDeque<(Id, Timer)>,
     waiting_on_all: HashMap<Id, SetU64>,
     waiting_on_first: HashMap<Id, SetU64>,
+    waiting_on_signal: HashMap<SignalId, SetU64>,
     scope_ownership: HashMap<Id, SetU64>,
     is_awaited_by: HashMap<Id, Id>,
     new_coro_channel: (SyncSender<NewCoroutine>, SyncRec<NewCoroutine>),
@@ -49,6 +50,7 @@ impl Default for Executor {
             waiting_on_time: Default::default(),
             waiting_on_all: Default::default(),
             waiting_on_first: Default::default(),
+            waiting_on_signal: Default::default(),
             scope_ownership: Default::default(),
             is_awaited_by: Default::default(),
             new_coro_channel: shared_queue(),
@@ -122,6 +124,7 @@ impl Executor {
         });
 
         let mut parents = ParentTable::default();
+        let mut signals = HashMap::new();
 
         let mut ready_coro: VecDeque<(Id, usize)> = root_coros
             .into_iter()
@@ -129,7 +132,14 @@ impl Executor {
             .collect();
 
         while let Some((coro_id, node)) = ready_coro.pop_front() {
-            self.resume(coro_id, node, &mut ready_coro, &mut parents, world);
+            self.resume(
+                coro_id,
+                node,
+                &mut ready_coro,
+                &mut parents,
+                &mut signals,
+                world,
+            );
         }
 
         self.ids.flush();
@@ -142,6 +152,7 @@ impl Executor {
         coro_node: usize,
         ready_coro: &mut VecDeque<(Id, usize)>,
         parents: &mut ParentTable,
+        signal_table: &mut HashMap<SignalId, usize>,
         world: &mut World,
     ) {
         if !self.ids.contains(coro_id) {
@@ -189,6 +200,17 @@ impl Executor {
             }
         }
 
+        for EmitMsg { id, by } in unsafe { self.signal_channel.1.recv_all() } {
+            signal_table.insert(id, by);
+            if let Some(children) = self.waiting_on_signal.remove(&id) {
+                for c in children {
+                    let id = Id::from_bits(c);
+                    let node = parents.add_child(coro_node, id);
+                    ready_coro.push_back((id, node));
+                }
+            }
+        }
+
         let node = coro_node;
         let id = coro_id;
 
@@ -212,6 +234,20 @@ impl Executor {
             }
             CoroStatus::Cancel => {
                 self.cancel(id);
+            }
+            CoroStatus::Signal(signal_id) => {
+                if let Some(writer) = signal_table.get(&signal_id) {
+                    if !parents.is_parent(*writer, coro_node) {
+                        let node = parents.add_child(*writer, coro_id);
+                        ready_coro.push_back((coro_id, node));
+                        return;
+                    }
+                }
+
+                self.waiting_on_signal
+                    .entry(signal_id)
+                    .or_default()
+                    .insert(coro_id.to_bits());
             }
         };
     }
@@ -311,8 +347,11 @@ impl ParentTable {
 
         parents.extend(self.table.index(parent).clone());
         parents.insert(parent);
-        let node = self.table.len() - 1;
+        let node = self.table.len();
+
         self.node_map.insert(child, node);
+        self.table.push(parents);
+
         node
     }
 

@@ -105,11 +105,25 @@ mod test {
         time::Instant,
     };
 
-    use bevy::{ecs::system::Command, prelude::Mut, time::Time};
+    use bevy::{
+        ecs::system::{Command, EntityCommand},
+        prelude::{Component, Mut},
+        time::Time,
+    };
 
     use super::{
-        commands::root_coroutine, executor::Executor, function_coroutine::scope::Scope, *,
+        commands::{coroutine, root_coroutine},
+        coro_param::{
+            component::Wr,
+            on_change::{ChangeTracker, OnChange},
+        },
+        executor::Executor,
+        function_coroutine::scope::Scope,
+        *,
     };
+
+    #[derive(Component)]
+    struct ExampleComponent(u32);
 
     #[test]
     fn wait_on_tick() {
@@ -289,6 +303,50 @@ mod test {
 
         world.resource_scope(|w, mut executor: Mut<Executor>| {
             executor.tick_until_empty(w);
+        });
+    }
+
+    #[test]
+    fn waiting_on_internal_change() {
+        let mut world = World::new();
+        world.init_resource::<Executor>();
+        world.insert_resource(Time::new(Instant::now()));
+
+        let e = world
+            .spawn((
+                ExampleComponent(0),
+                ChangeTracker::new() as ChangeTracker<ExampleComponent>,
+            ))
+            .id();
+
+        let a = Arc::new(Mutex::new(0));
+        let b = Arc::clone(&a);
+
+        coroutine(
+            |mut fib: Scope, mut example: Wr<ExampleComponent>| async move {
+                for _ in 0..5 {
+                    fib.next_tick().await;
+                    example.get_mut(&mut fib).0 += 1;
+                }
+            },
+        )
+        .apply(e, &mut world);
+
+        coroutine(
+            |mut fib: Scope, on_change: OnChange<ExampleComponent>| async move {
+                for _ in 0..5 {
+                    on_change.observe(&mut fib).await;
+                    *b.lock().unwrap() += 1;
+                }
+            },
+        )
+        .apply(e, &mut world);
+
+        world.resource_scope(|w, mut executor: Mut<Executor>| {
+            for i in 0..5 {
+                executor.tick(w);
+                assert_eq!(*a.lock().unwrap(), i);
+            }
         });
     }
 }
