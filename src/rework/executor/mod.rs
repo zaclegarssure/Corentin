@@ -10,7 +10,7 @@ use tinyset::{SetU64, SetUsize};
 
 use self::{
     global_channel::{shared_queue, SyncRec, SyncSender},
-    msg::{CoroStatus, EmitMsg, NewCoroutine, YieldMsg},
+    msg::{CoroStatus, EmitMsg, NewCoroutine},
 };
 
 use super::{
@@ -36,7 +36,6 @@ pub struct Executor {
     waiting_on_first: HashMap<Id, SetU64>,
     scope_ownership: HashMap<Id, SetU64>,
     is_awaited_by: HashMap<Id, Id>,
-    yield_channel: (SyncSender<YieldMsg>, SyncRec<YieldMsg>),
     new_coro_channel: (SyncSender<NewCoroutine>, SyncRec<NewCoroutine>),
     signal_channel: (SyncSender<EmitMsg>, SyncRec<EmitMsg>),
 }
@@ -52,7 +51,6 @@ impl Default for Executor {
             waiting_on_first: Default::default(),
             scope_ownership: Default::default(),
             is_awaited_by: Default::default(),
-            yield_channel: shared_queue(),
             new_coro_channel: shared_queue(),
             signal_channel: shared_queue(),
         }
@@ -157,12 +155,11 @@ impl Executor {
             return;
         }
 
-        Coroutine::resume(
+        let status = Coroutine::resume(
             coro.as_mut(),
             world,
             &self.ids,
             coro_node,
-            self.yield_channel.0.clone(),
             self.new_coro_channel.0.clone(),
             self.signal_channel.0.clone(),
         );
@@ -192,8 +189,8 @@ impl Executor {
             }
         }
 
-        let YieldMsg { id, node, status } =
-            unsafe { self.yield_channel.1.recv_all().next().unwrap() };
+        let node = coro_node;
+        let id = coro_id;
 
         match status {
             CoroStatus::Done => {

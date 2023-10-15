@@ -52,7 +52,7 @@ where
                 let t = match this.id.owner {
                     Some(entity) => unsafe {
                         this.scope
-                            .resume_param()
+                            .resume_param_mut()
                             .world_cell()
                             .get_entity(entity)
                             .unwrap()
@@ -63,7 +63,7 @@ where
                     },
                     None => unsafe {
                         this.scope
-                            .resume_param()
+                            .resume_param_mut()
                             .world_cell()
                             .get_resource::<Signal<S, T>>()
                             .unwrap()

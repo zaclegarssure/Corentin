@@ -37,7 +37,7 @@ impl Future for NextTick<'_> {
 
                 // SAFETY: See [`Executor`]
                 let dt = unsafe {
-                    (self.scope.resume_param().world_cell())
+                    (self.scope.resume_param_mut().world_cell())
                         .get_resource::<Time>()
                         .unwrap()
                         .delta()

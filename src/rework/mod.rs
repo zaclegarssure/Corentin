@@ -8,9 +8,10 @@ use bevy::utils::HashMap;
 use tinyset::SetUsize;
 
 use self::executor::global_channel::SyncSender;
+use self::executor::msg::CoroStatus;
 use self::executor::msg::EmitMsg;
 use self::executor::msg::NewCoroutine;
-use self::executor::msg::YieldMsg;
+
 use self::id_alloc::Ids;
 
 mod commands;
@@ -27,17 +28,16 @@ mod id_alloc;
 /// A coroutine is a form of state machine. It can get resumed, and returns on which condition it
 /// should be resumed again.
 pub trait Coroutine: Send + 'static {
-    /// Resume execution of this coroutine.
-    /// All resuls are communicated back via channels.
+    /// Resume execution of this coroutine and returns it's new status.
+    /// All other side effects are communicated back via channels.
     fn resume(
         self: Pin<&mut Self>,
         world: &mut World,
         ids: &Ids,
         curr_node: usize,
-        yield_channel: SyncSender<YieldMsg>,
         next_coro_channel: SyncSender<NewCoroutine>,
         emit_signal: SyncSender<EmitMsg>,
-    );
+    ) -> CoroStatus;
 
     /// Return true, if this coroutine is still valid. If it is not, it should be despawned.
     /// Should be called before [`resume`], to avoid any panic.

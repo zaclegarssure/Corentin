@@ -11,7 +11,7 @@ use std::task::Poll;
 
 use pin_project::pin_project;
 
-use self::once_channel::Sender;
+use self::once_channel::OnceSender;
 use self::resume::Resume;
 use self::scope::ResumeParam;
 use self::scope::Scope;
@@ -24,7 +24,7 @@ use super::executor::global_channel::SyncSender;
 use super::executor::msg::CoroStatus;
 use super::executor::msg::EmitMsg;
 use super::executor::msg::NewCoroutine;
-use super::executor::msg::YieldMsg;
+
 use super::id_alloc::Id;
 use super::id_alloc::Ids;
 use super::Coroutine;
@@ -48,7 +48,7 @@ where
     id: Id,
     resume_param: Resume<ResumeParam>,
     meta: CoroMeta,
-    result_sender: Option<Sender<T>>,
+    result_sender: Option<OnceSender<T>>,
 }
 
 pub trait CoroutineParamFunction<Marker, T>: Send + 'static {
@@ -78,10 +78,9 @@ where
         world: &mut World,
         ids: &Ids,
         curr_node: usize,
-        yield_channel: SyncSender<YieldMsg>,
         next_coro_channel: SyncSender<NewCoroutine>,
         emit_signal: SyncSender<EmitMsg>,
-    ) {
+    ) -> CoroStatus {
         let waker = waker::create();
         // Dummy context
         let mut cx = Context::from_waker(&waker);
@@ -99,20 +98,30 @@ where
                 world,
                 ids,
                 curr_node,
-                yield_sender: Some(yield_channel.clone()),
+                yield_sender: None,
                 new_coro_sender: Some(next_coro_channel),
                 emit_sender: Some(emit_signal),
             });
 
             let res = this.future.poll(&mut cx);
 
-            this.resume_param.set(ResumeParam::new());
-
-            if let Poll::Ready(t) = res {
-                if let Some(sender) = this.result_sender.take() {
-                    sender.send_sync(t);
+            match res {
+                Poll::Ready(t) => {
+                    if let Some(sender) = this.result_sender.take() {
+                        sender.send(t);
+                    }
+                    CoroStatus::Done
                 }
-                yield_channel.send(YieldMsg::new(*this.id, curr_node, CoroStatus::Done));
+                _ => {
+                    let yield_ = this
+                        .resume_param
+                        .get_mut()
+                        .yield_sender
+                        .take()
+                        .expect(ERR_WRONGAWAIT);
+                    this.resume_param.set(ResumeParam::new());
+                    yield_
+                }
             }
         }
     }
@@ -154,7 +163,7 @@ where
         world_cell: UnsafeWorldCell,
         resume_param: Resume<ResumeParam>,
         id: Id,
-        result_sender: Option<Sender<T>>,
+        result_sender: Option<OnceSender<T>>,
         f: F,
     ) -> Option<Self> {
         let mut meta = CoroMeta {

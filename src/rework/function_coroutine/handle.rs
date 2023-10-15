@@ -4,12 +4,12 @@ use tinyset::SetU64;
 
 use crate::rework::id_alloc::Id;
 
-use super::once_channel::Receiver;
+use super::once_channel::OnceRec;
 
 /// Value representing an ongoing coroutine. Can be used to await it's result, or cancel the
 /// underlying coroutine by dropping it.
 pub enum CoroHandle<T> {
-    Waiting { id: Id, receiver: Receiver<T> },
+    Waiting { id: Id, receiver: OnceRec<T> },
     Done(T),
     Canceled,
     Finish,

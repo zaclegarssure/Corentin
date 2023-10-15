@@ -22,9 +22,9 @@ use super::{
     await_first::AwaitFirst,
     await_time::{DurationFuture, NextTick},
     handle::{CoroHandle, HandleTuple},
-    once_channel::{once_channel, Sender},
+    once_channel::{sync_once_channel, OnceSender},
     resume::Resume,
-    CoroStatus, CoroutineParamFunction, FunctionCoroutine, YieldMsg,
+    CoroStatus, CoroutineParamFunction, FunctionCoroutine,
 };
 
 /// The first parameter of any [`Coroutine`] It is used to spawn sub-coroutines, yield back to the
@@ -40,7 +40,7 @@ pub struct ResumeParam {
     pub(crate) world: *mut World,
     pub(crate) ids: *const Ids,
     pub(crate) curr_node: usize,
-    pub(crate) yield_sender: Option<SyncSender<YieldMsg>>,
+    pub(crate) yield_sender: Option<CoroStatus>,
     pub(crate) new_coro_sender: Option<SyncSender<NewCoroutine>>,
     pub(crate) emit_sender: Option<SyncSender<EmitMsg>>,
 }
@@ -69,10 +69,8 @@ impl ResumeParam {
         unsafe { self.ids.as_ref().unwrap().allocate_id() }
     }
 
-    pub fn send_yield(&mut self, msg: YieldMsg) {
-        unsafe {
-            self.yield_sender.as_mut().unwrap().send(msg);
-        }
+    pub fn send_yield(&mut self, msg: CoroStatus) {
+        self.yield_sender = Some(msg);
     }
 
     pub fn send_new_coro(&mut self, new_coro: NewCoroutine) {
@@ -104,14 +102,14 @@ impl Scope {
         owner: Option<Entity>,
         start_now: bool,
         parent_scope: Option<Id>,
-        result_sender: Option<Sender<T>>,
+        result_sender: Option<OnceSender<T>>,
         coroutine: C,
     ) -> Option<Id>
     where
         C: CoroutineParamFunction<Marker, T>,
         T: Sync + Send + 'static,
     {
-        let self_params = self.resume_param();
+        let self_params = self.resume_param_mut();
         let resume_param = Resume::new(ResumeParam::new());
         let new_scope = Self {
             id: self_params.alloc_id(),
@@ -216,7 +214,7 @@ impl Scope {
         C: CoroutineParamFunction<Marker, T>,
         T: Sync + Send + 'static,
     {
-        let (result_sender, receiver) = once_channel();
+        let (result_sender, receiver) = sync_once_channel();
         let id = self.build_coroutine(None, true, None, Some(result_sender), coroutine)?;
         Some(CoroHandle::Waiting { id, receiver })
     }
@@ -241,18 +239,16 @@ impl Scope {
     /// which should normally be the case if you have a mutable
     /// reference to the scope, but there might be ways to break this
     /// invariant.
-    pub fn resume_param(&mut self) -> &mut ResumeParam {
+    pub fn resume_param_mut(&mut self) -> &mut ResumeParam {
         unsafe { self.resume_param.as_mut() }
     }
 
-    pub fn yield_(&mut self, status: CoroStatus) {
-        let msg = YieldMsg {
-            id: self.id,
-            node: self.resume_param().curr_node,
-            status,
-        };
+    pub fn resume_param(&self) -> &ResumeParam {
+        unsafe { self.resume_param.as_ref() }
+    }
 
-        self.resume_param().send_yield(msg);
+    pub fn yield_(&mut self, status: CoroStatus) {
+        self.resume_param_mut().send_yield(status);
     }
 
     /// Returns the [`Entity`] owning this [`Coroutine`], if it exists.
