@@ -1,40 +1,141 @@
-//! A coroutine library for the [bevy](https://github.com/bevyengine/bevy) game engine.
-//!
-//! TODO: Show example
+use std::pin::Pin;
+
+use bevy::ecs::component::ComponentId;
+use bevy::prelude::Entity;
+use bevy::prelude::World;
+use bevy::utils::synccell::SyncCell;
+use bevy::utils::HashMap;
+use tinyset::SetUsize;
+
+use self::executor::global_channel::SyncSender;
+use self::executor::msg::CoroStatus;
+use self::executor::msg::EmitMsg;
+use self::executor::msg::NewCoroutine;
+
+use self::id_alloc::Ids;
+
 pub mod commands;
-pub mod coroutine;
+pub mod coro_param;
 pub mod executor;
+pub mod function_coroutine;
+pub mod id_alloc;
 pub mod plugin;
 
 pub mod prelude {
     #[doc(hidden)]
-    pub use crate::commands::{coroutine, AddCoroutine};
+    pub use crate::function_coroutine::prelude::*;
+
     #[doc(hidden)]
-    pub use crate::coroutine::coro_param::{
-        component::Rd, component::Wr, resource::RdRes, resource::WrRes, Opt,
-    };
+    pub use crate::coro_param::prelude::*;
+
     #[doc(hidden)]
-    pub use crate::coroutine::function_coroutine::Fib;
+    pub use crate::commands::*;
+
     #[doc(hidden)]
-    pub use crate::executor::Executor;
-    #[doc(hidden)]
-    pub use crate::plugin::CorentinPlugin;
+    pub use crate::plugin::*;
 }
 
+// THINGS MISSING:
+// Dropping a scope should drop the local entities
+// Commands
+// SIGNALS !!!
+
+/// A coroutine is a form of state machine. It can get resumed, and returns on which condition it
+/// should be resumed again.
+pub trait Coroutine: Send + 'static {
+    /// Resume execution of this coroutine and returns it's new status.
+    /// All other side effects are communicated back via channels.
+    fn resume(
+        self: Pin<&mut Self>,
+        world: &mut World,
+        ids: &Ids,
+        curr_node: usize,
+        next_coro_channel: SyncSender<NewCoroutine>,
+        emit_signal: SyncSender<EmitMsg>,
+    ) -> CoroStatus;
+
+    /// Return true, if this coroutine is still valid. If it is not, it should be despawned.
+    /// Should be called before [`resume`], to avoid any panic.
+    fn is_valid(&self, world: &World) -> bool;
+
+    /// Returns this coroutine metadata
+    fn meta(&self) -> &CoroMeta;
+}
+
+pub struct CoroMeta {
+    owner: Option<Entity>,
+    access: CoroAccess,
+}
+
+#[derive(Default, Clone)]
+pub struct CoroAccess {
+    reads: HashMap<SourceId, SetUsize>,
+    writes: HashMap<SourceId, SetUsize>,
+}
+
+#[derive(PartialEq, Eq, Clone, Copy, Hash)]
+pub enum SourceId {
+    Entity(Entity),
+    AllEntities,
+    World,
+}
+
+impl CoroAccess {
+    /// Add a write access. Returns false if there is a conflict.
+    /// The access is updated only when no conflicts are found.
+    pub fn add_write(&mut self, to: SourceId, component: ComponentId) -> bool {
+        if let Some(reads) = self.reads.get(&to) {
+            if reads.contains(component.index()) {
+                return false;
+            }
+        }
+
+        self.writes.entry(to).or_default().insert(component.index())
+    }
+
+    /// Add a read access. Returns false if there is a conflict.
+    /// The access is updated only when no conflicts are found.
+    pub fn add_read(&mut self, to: SourceId, component: ComponentId) -> bool {
+        if let Some(reads) = self.writes.get(&to) {
+            if reads.contains(component.index()) {
+                return false;
+            }
+        }
+
+        self.reads.entry(to).or_default().insert(component.index());
+
+        true
+    }
+}
+
+/// A heap allocated [`Coroutine`]
+/// It is pinned since most coroutine are implemented using [`Future`]. [`SyncCell`] is used to
+/// make them [`Sync`] while being only [`Send`].
+type HeapCoro = SyncCell<Pin<Box<dyn Coroutine>>>;
+
 #[cfg(test)]
-mod tests {
+mod test {
     use std::{
         sync::{Arc, Mutex},
         time::Instant,
     };
 
     use bevy::{
-        ecs::system::EntityCommand,
-        prelude::{Component, Mut, World},
+        ecs::system::{Command, EntityCommand},
+        prelude::{Component, Mut},
         time::Time,
     };
 
-    use crate::{commands::coroutine, coroutine::CoroWrites, prelude::*};
+    use super::{
+        commands::{coroutine, root_coroutine},
+        coro_param::{
+            component::Wr,
+            on_change::{ChangeTracker, OnChange},
+        },
+        executor::Executor,
+        function_coroutine::scope::Scope,
+        *,
+    };
 
     #[derive(Component)]
     struct ExampleComponent(u32);
@@ -42,21 +143,19 @@ mod tests {
     #[test]
     fn wait_on_tick() {
         let mut world = World::new();
-        let e = world.spawn_empty().id();
         world.init_resource::<Executor>();
-        world.init_resource::<CoroWrites>();
         world.insert_resource(Time::new(Instant::now()));
 
         let a = Arc::new(Mutex::new(0));
         let b = Arc::clone(&a);
-        coroutine(|mut fib: Fib| async move {
+        root_coroutine(|mut s: Scope| async move {
             *b.lock().unwrap() += 1;
-            fib.next_tick().await;
+            s.next_tick().await;
             *b.lock().unwrap() += 1;
-            fib.next_tick().await;
+            s.next_tick().await;
             *b.lock().unwrap() += 1;
         })
-        .apply(e, &mut world);
+        .apply(&mut world);
 
         world.resource_scope(|w, mut executor: Mut<Executor>| {
             executor.tick(w);
@@ -67,40 +166,6 @@ mod tests {
             assert_eq!(*a.lock().unwrap(), 3);
             executor.tick(w);
             assert_eq!(*a.lock().unwrap(), 3);
-        });
-    }
-
-    #[test]
-    fn wait_on_external_change() {
-        let mut world = World::new();
-        world.init_resource::<Executor>();
-        world.init_resource::<CoroWrites>();
-        world.insert_resource(Time::new(Instant::now()));
-
-        let e = world.spawn(ExampleComponent(0)).id();
-        let a = Arc::new(Mutex::new(0));
-        let b = Arc::clone(&a);
-
-        coroutine(|mut fib: Fib, ex: Rd<ExampleComponent>| async move {
-            fib.next_tick().await;
-            ex.on_change(&mut fib).await;
-            *b.lock().unwrap() += 1;
-        })
-        .apply(e, &mut world);
-
-        world.resource_scope(|w, mut executor: Mut<Executor>| {
-            w.clear_trackers();
-            executor.tick(w);
-            assert_eq!(*a.lock().unwrap(), 0);
-            executor.tick(w);
-            assert_eq!(*a.lock().unwrap(), 0);
-            executor.tick(w);
-            assert_eq!(*a.lock().unwrap(), 0);
-            w.entity_mut(e).get_mut::<ExampleComponent>().unwrap().0 += 1;
-            executor.tick(w);
-            assert_eq!(*a.lock().unwrap(), 1);
-            executor.tick(w);
-            assert_eq!(*a.lock().unwrap(), 1);
         });
     }
 
@@ -112,13 +177,12 @@ mod tests {
         }
         let mut world = World::new();
         world.init_resource::<Executor>();
-        world.init_resource::<CoroWrites>();
         world.insert_resource(Time::new(Instant::now()));
 
-        coroutine(|_: Fib| async move {
+        root_coroutine(|_: Scope| async move {
             external_future().await;
         })
-        .apply(world.spawn_empty().id(), &mut world);
+        .apply(&mut world);
 
         world.resource_scope(|w, mut executor: Mut<Executor>| {
             executor.tick(w);
@@ -126,37 +190,34 @@ mod tests {
     }
 
     #[test]
-    fn waiting_on_par_or() {
+    fn waiting_on_first() {
         let mut world = World::new();
         world.init_resource::<Executor>();
-        world.init_resource::<CoroWrites>();
         world.insert_resource(Time::new(Instant::now()));
 
-        let e = world.spawn_empty().id();
         let a = Arc::new(Mutex::new(0));
         let b = Arc::clone(&a);
 
-        coroutine(|mut fib: Fib| async move {
-            fib.par_or(|mut fib: Fib| async move {
+        root_coroutine(|mut fib: Scope| async move {
+            let first = fib.start(|mut s: Scope| async move {
                 loop {
-                    fib.next_tick().await;
+                    s.next_tick().await;
                     *b.lock().unwrap() += 1;
                 }
-            })
-            .with(|mut fib: Fib| async move {
+            });
+
+            let second = fib.start(|mut s: Scope| async move {
                 for _ in 0..4 {
-                    fib.next_tick().await;
+                    s.next_tick().await;
                 }
-            })
-            .await;
+            });
+
+            fib.first([first, second]).await;
         })
-        .apply(e, &mut world);
+        .apply(&mut world);
 
         world.resource_scope(|w, mut executor: Mut<Executor>| {
             for i in 0..5 {
-                // Note that it works because the coroutine on the the top of the par_or,
-                // has priority over the one on the bottom, meaning its side effect will be
-                // seen on the last iteration. (Okay I just kind of gave)
                 executor.tick(w);
                 assert_eq!(*a.lock().unwrap(), i);
             }
@@ -164,31 +225,30 @@ mod tests {
     }
 
     #[test]
-    fn waiting_on_par_and() {
+    fn waiting_on_all() {
         let mut world = World::new();
         world.init_resource::<Executor>();
-        world.init_resource::<CoroWrites>();
         world.insert_resource(Time::new(Instant::now()));
 
-        let e = world.spawn_empty().id();
         let a = Arc::new(Mutex::new(0));
         let b = Arc::clone(&a);
         let c = Arc::clone(&a);
 
-        coroutine(|mut fib: Fib| async move {
-            fib.par_and(|mut fib: Fib| async move {
-                fib.next_tick().await;
+        root_coroutine(|mut s: Scope| async move {
+            let first = s.start(|mut s: Scope| async move {
+                s.next_tick().await;
                 *b.lock().unwrap() += 1;
-            })
-            .with(|mut fib: Fib| async move {
+            });
+            let second = s.start(|mut s: Scope| async move {
                 for _ in 0..2 {
-                    fib.next_tick().await;
+                    s.next_tick().await;
                     *c.lock().unwrap() += 1;
                 }
-            })
-            .await;
+            });
+
+            s.all((first, second)).await;
         })
-        .apply(e, &mut world);
+        .apply(&mut world);
 
         world.resource_scope(|w, mut executor: Mut<Executor>| {
             executor.tick(w);
@@ -203,55 +263,61 @@ mod tests {
     }
 
     #[test]
-    fn reading_components() {
+    fn waiting_on_first_result() {
         let mut world = World::new();
         world.init_resource::<Executor>();
-        world.init_resource::<CoroWrites>();
         world.insert_resource(Time::new(Instant::now()));
 
-        let e = world.spawn(ExampleComponent(0)).id();
+        root_coroutine(|mut fib: Scope| async move {
+            let first = fib.start(|mut s: Scope| async move {
+                loop {
+                    s.next_tick().await;
+                }
+            });
 
-        coroutine(|mut fib: Fib, example: Rd<ExampleComponent>| async move {
-            for i in 0..5 {
-                fib.next_tick().await;
-                assert_eq!(example.get(&fib).0, i);
-            }
+            let second = fib.start(|mut s: Scope| async move {
+                for _ in 0..2 {
+                    s.next_tick().await;
+                }
+                10
+            });
+
+            let res = fib.first([first, second]).await;
+            assert_eq!(res, 10);
         })
-        .apply(e, &mut world);
+        .apply(&mut world);
 
         world.resource_scope(|w, mut executor: Mut<Executor>| {
-            executor.tick(w);
-            for _ in 0..5 {
-                executor.tick(w);
-                w.entity_mut(e).get_mut::<ExampleComponent>().unwrap().0 += 1;
-            }
+            executor.tick_until_empty(w);
         });
     }
 
     #[test]
-    fn writing_components() {
+    fn waiting_on_all_result() {
         let mut world = World::new();
         world.init_resource::<Executor>();
-        world.init_resource::<CoroWrites>();
         world.insert_resource(Time::new(Instant::now()));
 
-        let e = world.spawn(ExampleComponent(0)).id();
+        root_coroutine(|mut fib: Scope| async move {
+            let first = fib.start(|mut s: Scope| async move {
+                s.next_tick().await;
+                20
+            });
 
-        coroutine(
-            |mut fib: Fib, mut example: Wr<ExampleComponent>| async move {
-                for _ in 0..5 {
-                    fib.next_tick().await;
-                    example.get_mut(&fib).0 += 1;
+            let second = fib.start(|mut s: Scope| async move {
+                for _ in 0..2 {
+                    s.next_tick().await;
                 }
-            },
-        )
-        .apply(e, &mut world);
+                10
+            });
+
+            let res = fib.all((first, second)).await;
+            assert_eq!(res, (20, 10));
+        })
+        .apply(&mut world);
 
         world.resource_scope(|w, mut executor: Mut<Executor>| {
-            for i in 0..5 {
-                executor.tick(w);
-                assert_eq!(w.entity_mut(e).get::<ExampleComponent>().unwrap().0, i)
-            }
+            executor.tick_until_empty(w);
         });
     }
 
@@ -259,74 +325,42 @@ mod tests {
     fn waiting_on_internal_change() {
         let mut world = World::new();
         world.init_resource::<Executor>();
-        world.init_resource::<CoroWrites>();
         world.insert_resource(Time::new(Instant::now()));
 
-        let e = world.spawn(ExampleComponent(0)).id();
+        let e = world
+            .spawn((
+                ExampleComponent(0),
+                ChangeTracker::new() as ChangeTracker<ExampleComponent>,
+            ))
+            .id();
 
         let a = Arc::new(Mutex::new(0));
         let b = Arc::clone(&a);
 
         coroutine(
-            |mut fib: Fib, mut example: Wr<ExampleComponent>| async move {
+            |mut fib: Scope, mut example: Wr<ExampleComponent>| async move {
                 for _ in 0..5 {
                     fib.next_tick().await;
-                    example.get_mut(&fib).0 += 1;
+                    example.get_mut(&mut fib).0 += 1;
                 }
             },
         )
         .apply(e, &mut world);
 
-        coroutine(|mut fib: Fib, example: Rd<ExampleComponent>| async move {
-            for _ in 0..5 {
-                example.on_change(&mut fib).await;
-                *b.lock().unwrap() += 1;
-            }
-        })
+        coroutine(
+            |mut fib: Scope, on_change: OnChange<ExampleComponent>| async move {
+                for _ in 0..5 {
+                    on_change.observe(&mut fib).await;
+                    *b.lock().unwrap() += 1;
+                }
+            },
+        )
         .apply(e, &mut world);
 
         world.resource_scope(|w, mut executor: Mut<Executor>| {
             for i in 0..5 {
                 executor.tick(w);
                 assert_eq!(*a.lock().unwrap(), i);
-                w.clear_trackers();
-            }
-        });
-    }
-
-    #[test]
-    fn waiting_on_internal_and_external_change_is_correct() {
-        let mut world = World::new();
-        world.init_resource::<Executor>();
-        world.init_resource::<CoroWrites>();
-        world.insert_resource(Time::new(Instant::now()));
-        let e = world.spawn(ExampleComponent(0)).id();
-
-        let a = Arc::new(Mutex::new(0));
-        let b = Arc::clone(&a);
-
-        coroutine(|mut fib: Fib, ex: Rd<ExampleComponent>| async move {
-            loop {
-                ex.on_change(&mut fib).await;
-                *b.lock().unwrap() += 1;
-            }
-        })
-        .apply(e, &mut world);
-
-        coroutine(|mut fib: Fib, mut ex: Wr<ExampleComponent>| async move {
-            loop {
-                fib.next_tick().await;
-                ex.get_mut(&mut fib).0 += 1;
-            }
-        })
-        .apply(e, &mut world);
-
-        world.resource_scope(|w, mut executor: Mut<Executor>| {
-            for i in 0..5 {
-                w.entity_mut(e).get_mut::<ExampleComponent>().unwrap().0 += 1;
-                executor.tick(w);
-                assert_eq!(*a.lock().unwrap(), i * 2);
-                w.clear_trackers();
             }
         });
     }

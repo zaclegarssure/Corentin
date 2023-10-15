@@ -9,6 +9,7 @@ edition = "2021"
 bevy = { version = "0.11.0", features = ["dynamic_linking"] }
 pin-project = "1"
 tinyset = "0.4.15"
+oneshot = { version = "0.1.6", default-features = false }
 
 [profile.dev]
 opt-level = 1

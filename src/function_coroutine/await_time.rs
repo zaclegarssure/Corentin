@@ -1,6 +1,3 @@
-use crate::coroutine::WaitingReason;
-use crate::prelude::Fib;
-
 use bevy::time::Time;
 use bevy::time::Timer;
 use bevy::time::TimerMode;
@@ -11,17 +8,19 @@ use std::task::Poll;
 use std::time::Duration;
 
 use super::CoroState;
+use super::CoroStatus;
+use super::Scope;
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct NextTick<'a> {
-    fib: &'a mut Fib,
+    scope: &'a mut Scope,
     state: CoroState,
 }
 
 impl<'a> NextTick<'a> {
-    pub(crate) fn new(fib: &'a mut Fib) -> Self {
+    pub fn new(scope: &'a mut Scope) -> Self {
         NextTick {
-            fib,
+            scope,
             state: CoroState::Running,
         }
     }
@@ -36,9 +35,9 @@ impl Future for NextTick<'_> {
             CoroState::Halted => {
                 self.state = CoroState::Running;
 
-                // SAFETY: None lmao
+                // SAFETY: See [`Executor`]
                 let dt = unsafe {
-                    (self.fib.world_window.world_cell())
+                    (self.scope.resume_param_mut().world_cell())
                         .get_resource::<Time>()
                         .unwrap()
                         .delta()
@@ -47,7 +46,7 @@ impl Future for NextTick<'_> {
             }
             CoroState::Running => {
                 self.state = CoroState::Halted;
-                self.fib.yield_channel.send(WaitingReason::Tick);
+                self.scope.yield_(CoroStatus::Tick);
                 Poll::Pending
             }
         }
@@ -56,15 +55,15 @@ impl Future for NextTick<'_> {
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct DurationFuture<'a> {
-    fib: &'a mut Fib,
+    scope: &'a mut Scope,
     duration: Duration,
     state: CoroState,
 }
 
 impl<'a> DurationFuture<'a> {
-    pub(crate) fn new(fib: &'a mut Fib, duration: Duration) -> Self {
+    pub fn new(scope: &'a mut Scope, duration: Duration) -> Self {
         DurationFuture {
-            fib,
+            scope,
             duration,
             state: CoroState::Running,
         }
@@ -83,12 +82,8 @@ impl Future for DurationFuture<'_> {
             }
             CoroState::Running => {
                 self.state = CoroState::Halted;
-                self.fib
-                    .yield_channel
-                    .send(WaitingReason::Duration(Timer::new(
-                        self.duration,
-                        TimerMode::Once,
-                    )));
+                let status = CoroStatus::Duration(Timer::new(self.duration, TimerMode::Once));
+                self.scope.yield_(status);
                 Poll::Pending
             }
         }
