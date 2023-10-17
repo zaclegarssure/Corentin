@@ -47,10 +47,9 @@ impl<T: Component> CoroParam for Rd<T> {
 impl<T: Component> Rd<T> {
     /// Return the current value of the [`Component`]. The result ([`InGuard`]) cannot be held
     /// accros any await.
-    pub fn get<'a>(&'a self, scope: &'a Scope) -> &'a T {
+    pub fn get<'a>(&'a mut self, scope: &'a Scope) -> &'a T {
         unsafe {
             scope
-                .resume_param()
                 .world_cell()
                 .get_entity(self.owner)
                 .unwrap()
@@ -98,10 +97,9 @@ impl<T: Component> CoroParam for Wr<T> {
 }
 
 impl<T: Component> Wr<T> {
-    pub fn get<'a>(&'a self, scope: &'a Scope) -> &'a T {
+    pub fn get<'a>(&'a mut self, scope: &'a Scope) -> &'a T {
         let value = unsafe {
             scope
-                .resume_param()
                 .world_cell()
                 .get_entity(self.owner)
                 .unwrap()
@@ -113,24 +111,22 @@ impl<T: Component> Wr<T> {
     }
 
     // TODO Should ideally only borrow scope immutably
-    pub fn get_mut<'a>(&'a mut self, scope: &'a mut Scope) -> Mut<'a, T> {
+    pub fn get_mut<'a>(&'a mut self, scope: &'a Scope) -> Mut<'a, T> {
         unsafe {
-            let entity = scope
-                .resume_param()
-                .world_cell()
+            let cell = scope.world_cell();
+            let entity = 
+                cell
                 .get_entity(self.owner)
                 .unwrap();
 
             if entity.contains::<ChangeTracker<T>>() {
-                scope.resume_param_mut().emit_signal(SignalId {
+                scope.emit_signal(SignalId {
                     signal_type: self.id,
                     owner: Some(self.owner),
                 });
             }
 
-            scope
-                .resume_param()
-                .world_cell()
+            cell
                 .get_entity(self.owner)
                 .unwrap()
                 .get_mut::<T>()

@@ -38,6 +38,7 @@ pub mod handle;
 pub mod once_channel;
 pub mod resume;
 pub mod scope;
+pub mod deferred;
 
 pub mod prelude {
     #[doc(hidden)]

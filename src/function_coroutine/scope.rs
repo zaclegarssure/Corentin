@@ -18,6 +18,7 @@ use super::{
     await_all::AwaitAll,
     await_first::AwaitFirst,
     await_time::{DurationFuture, NextTick},
+    deferred::DeferredOps,
     handle::{CoroHandle, HandleTuple},
     once_channel::{sync_once_channel, OnceSender},
     resume::Resume,
@@ -242,6 +243,10 @@ impl Scope {
         self.build_coroutine(None, true, None, None, coroutine);
     }
 
+    pub fn deferred(&mut self) -> DeferredOps<'_> {
+        DeferredOps::new(self)
+    }
+
     pub fn commands(&mut self) -> Commands<'_, '_> {
         let queue = unsafe { self.resume_param.as_mut().commands.as_mut().unwrap() };
         let entities = unsafe { self.resume_param.as_mut().world_cell().entities() };
@@ -250,7 +255,7 @@ impl Scope {
 
     /// Get a mutable reference to this scope [`ResumeParam`].
     ///
-    /// # SAFETY:
+    /// # Safety
     /// This should be called only when the coroutine is polled,
     /// which should normally be the case if you have a mutable
     /// reference to the scope, but there might be ways to break this
@@ -259,8 +264,12 @@ impl Scope {
         unsafe { self.resume_param.as_mut() }
     }
 
-    pub fn resume_param(&self) -> &ResumeParam {
-        unsafe { self.resume_param.as_ref() }
+    pub(crate) fn world_cell(&self) -> UnsafeWorldCell<'_> {
+        unsafe { (*self.resume_param.as_ptr()).world_cell() }
+    }
+
+    pub(crate) fn emit_signal(&self, signal: SignalId) {
+        unsafe { (*self.resume_param.as_ptr()).emit_signal(signal) }
     }
 
     pub fn yield_(&mut self, status: CoroStatus) {
