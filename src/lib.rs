@@ -1,6 +1,7 @@
 use std::pin::Pin;
 
 use bevy::ecs::component::ComponentId;
+use bevy::ecs::system::CommandQueue;
 use bevy::prelude::Entity;
 use bevy::prelude::World;
 use bevy::utils::synccell::SyncCell;
@@ -36,7 +37,6 @@ pub mod prelude {
 
 // THINGS MISSING:
 // Dropping a scope should drop the local entities
-// Commands
 // SIGNALS !!!
 
 /// A coroutine is a form of state machine. It can get resumed, and returns on which condition it
@@ -51,6 +51,7 @@ pub trait Coroutine: Send + 'static {
         curr_node: usize,
         next_coro_channel: &mut Vec<NewCoroutine>,
         emit_signal: &mut Vec<EmitMsg>,
+        commands: &mut CommandQueue,
     ) -> CoroStatus;
 
     /// Return true, if this coroutine is still valid. If it is not, it should be despawned.
@@ -361,6 +362,29 @@ mod test {
                 executor.tick(w);
                 assert_eq!(*a.lock().unwrap(), i);
             }
+        });
+    }
+
+    #[test]
+    fn applying_commands_from_coroutine() {
+        let mut world = World::new();
+        world.init_resource::<Executor>();
+        world.insert_resource(Time::new(Instant::now()));
+
+        root_coroutine(|mut s: Scope| async move {
+            let e = s.commands().spawn(ExampleComponent(0)).id();
+            s.next_tick().await;
+            s.commands().entity(e).remove::<ExampleComponent>();
+        })
+        .apply(&mut world);
+
+        world.resource_scope(|world, mut executor: Mut<Executor>| {
+            let mut state = world.query::<&ExampleComponent>();
+            assert_eq!(state.iter(world).len(), 0);
+            executor.tick(world);
+            assert_eq!(state.iter(world).len(), 1);
+            executor.tick(world);
+            assert_eq!(state.iter(world).len(), 0);
         });
     }
 }

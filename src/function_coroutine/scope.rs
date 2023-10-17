@@ -4,8 +4,8 @@ use std::{
 };
 
 use bevy::{
-    ecs::world::unsafe_world_cell::UnsafeWorldCell,
-    prelude::{Entity, World},
+    ecs::{system::CommandQueue, world::unsafe_world_cell::UnsafeWorldCell},
+    prelude::{Commands, Entity, World},
     utils::synccell::SyncCell,
 };
 
@@ -40,6 +40,7 @@ pub struct ResumeParam {
     pub(crate) yield_sender: Option<CoroStatus>,
     pub(crate) new_coro_sender: *mut Vec<NewCoroutine>,
     pub(crate) emit_sender: *mut Vec<EmitMsg>,
+    pub(crate) commands: *mut CommandQueue,
 }
 
 impl Default for ResumeParam {
@@ -57,6 +58,7 @@ impl ResumeParam {
             yield_sender: None,
             new_coro_sender: null_mut(),
             emit_sender: null_mut(),
+            commands: null_mut(),
         }
     }
 
@@ -238,6 +240,12 @@ impl Scope {
         T: Sync + Send + 'static,
     {
         self.build_coroutine(None, true, None, None, coroutine);
+    }
+
+    pub fn commands(&mut self) -> Commands<'_, '_> {
+        let queue = unsafe { self.resume_param.as_mut().commands.as_mut().unwrap() };
+        let entities = unsafe { self.resume_param.as_mut().world_cell().entities() };
+        Commands::new_from_entities(queue, entities)
     }
 
     /// Get a mutable reference to this scope [`ResumeParam`].

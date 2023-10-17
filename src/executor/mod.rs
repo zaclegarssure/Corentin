@@ -1,4 +1,4 @@
-use bevy::{prelude::Entity, time::Time, utils::synccell::SyncCell};
+use bevy::{ecs::system::CommandQueue, prelude::Entity, time::Time, utils::synccell::SyncCell};
 use std::{collections::VecDeque, ops::Index};
 
 use bevy::{
@@ -109,6 +109,7 @@ impl Executor {
 
         let mut new_coro = Vec::new();
         let mut emit_signal = Vec::new();
+        let mut command_queue = CommandQueue::default();
 
         while let Some((coro_id, node)) = ready_coro.pop_front() {
             self.resume(
@@ -119,11 +120,13 @@ impl Executor {
                 &mut signals,
                 &mut new_coro,
                 &mut emit_signal,
+                &mut command_queue,
                 world,
             );
         }
 
         self.ids.flush();
+        command_queue.apply(world);
     }
 
     /// Run a specific coroutine and it's children.
@@ -137,6 +140,7 @@ impl Executor {
         signal_table: &mut HashMap<SignalId, usize>,
         new_coro: &mut Vec<NewCoroutine>,
         emit_signal: &mut Vec<EmitMsg>,
+        command_queue: &mut CommandQueue,
         world: &mut World,
     ) {
         if !self.ids.contains(coro_id) {
@@ -157,6 +161,7 @@ impl Executor {
             coro_node,
             new_coro,
             emit_signal,
+            command_queue,
         );
 
         // TODO Signals

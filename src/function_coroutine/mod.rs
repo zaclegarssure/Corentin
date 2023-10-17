@@ -1,3 +1,4 @@
+use bevy::ecs::system::CommandQueue;
 use bevy::ecs::world::World;
 
 use bevy::ecs::world::unsafe_world_cell::UnsafeWorldCell;
@@ -88,6 +89,7 @@ where
         curr_node: usize,
         next_coro_channel: &mut Vec<NewCoroutine>,
         emit_signal: &mut Vec<EmitMsg>,
+        commands: &mut CommandQueue,
     ) -> CoroStatus {
         let waker = waker::create();
         // Dummy context
@@ -98,6 +100,7 @@ where
         let world = world as *mut _;
         let new_coro_sender = next_coro_channel as *mut _;
         let emit_sender = emit_signal as *mut _;
+        let commands = commands as *mut _;
         let ids = ids as *const _;
 
         // Safety: The only unsafe operations are swapping the resume arguments back and forth
@@ -111,6 +114,7 @@ where
                 yield_sender: None,
                 new_coro_sender,
                 emit_sender,
+                commands,
             });
 
             let res = this.future.poll(&mut cx);
