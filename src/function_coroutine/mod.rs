@@ -20,7 +20,6 @@ use super::coro_param::CoroParam;
 use super::CoroAccess;
 use super::CoroMeta;
 
-use super::executor::global_channel::SyncSender;
 use super::executor::msg::CoroStatus;
 use super::executor::msg::EmitMsg;
 use super::executor::msg::NewCoroutine;
@@ -87,8 +86,8 @@ where
         world: &mut World,
         ids: &Ids,
         curr_node: usize,
-        next_coro_channel: SyncSender<NewCoroutine>,
-        emit_signal: SyncSender<EmitMsg>,
+        next_coro_channel: &mut Vec<NewCoroutine>,
+        emit_signal: &mut Vec<EmitMsg>,
     ) -> CoroStatus {
         let waker = waker::create();
         // Dummy context
@@ -97,6 +96,8 @@ where
         let this = self.project();
 
         let world = world as *mut _;
+        let new_coro_sender = next_coro_channel as *mut _;
+        let emit_sender = emit_signal as *mut _;
         let ids = ids as *const _;
 
         // Safety: The only unsafe operations are swapping the resume arguments back and forth
@@ -108,8 +109,8 @@ where
                 ids,
                 curr_node,
                 yield_sender: None,
-                new_coro_sender: Some(next_coro_channel),
-                emit_sender: Some(emit_signal),
+                new_coro_sender,
+                emit_sender,
             });
 
             let res = this.future.poll(&mut cx);

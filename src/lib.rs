@@ -7,7 +7,6 @@ use bevy::utils::synccell::SyncCell;
 use bevy::utils::HashMap;
 use tinyset::SetUsize;
 
-use self::executor::global_channel::SyncSender;
 use self::executor::msg::CoroStatus;
 use self::executor::msg::EmitMsg;
 use self::executor::msg::NewCoroutine;
@@ -50,8 +49,8 @@ pub trait Coroutine: Send + 'static {
         world: &mut World,
         ids: &Ids,
         curr_node: usize,
-        next_coro_channel: SyncSender<NewCoroutine>,
-        emit_signal: SyncSender<EmitMsg>,
+        next_coro_channel: &mut Vec<NewCoroutine>,
+        emit_signal: &mut Vec<EmitMsg>,
     ) -> CoroStatus;
 
     /// Return true, if this coroutine is still valid. If it is not, it should be despawned.

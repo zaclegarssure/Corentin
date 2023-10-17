@@ -10,10 +10,7 @@ use bevy::{
 };
 
 use crate::{
-    executor::{
-        global_channel::SyncSender,
-        msg::{EmitMsg, NewCoroutine, SignalId},
-    },
+    executor::msg::{EmitMsg, NewCoroutine, SignalId},
     id_alloc::{Id, Ids},
 };
 
@@ -41,8 +38,8 @@ pub struct ResumeParam {
     pub(crate) ids: *const Ids,
     pub(crate) curr_node: usize,
     pub(crate) yield_sender: Option<CoroStatus>,
-    pub(crate) new_coro_sender: Option<SyncSender<NewCoroutine>>,
-    pub(crate) emit_sender: Option<SyncSender<EmitMsg>>,
+    pub(crate) new_coro_sender: *mut Vec<NewCoroutine>,
+    pub(crate) emit_sender: *mut Vec<EmitMsg>,
 }
 
 impl Default for ResumeParam {
@@ -58,8 +55,8 @@ impl ResumeParam {
             ids: null(),
             curr_node: 0,
             yield_sender: None,
-            new_coro_sender: None,
-            emit_sender: None,
+            new_coro_sender: null_mut(),
+            emit_sender: null_mut(),
         }
     }
 
@@ -81,13 +78,13 @@ impl ResumeParam {
 
     pub fn send_new_coro(&mut self, new_coro: NewCoroutine) {
         unsafe {
-            self.new_coro_sender.as_mut().unwrap().send(new_coro);
+            self.new_coro_sender.as_mut().unwrap().push(new_coro);
         }
     }
 
     pub fn emit_signal(&mut self, id: SignalId) {
         unsafe {
-            self.emit_sender.as_mut().unwrap().send(EmitMsg {
+            self.emit_sender.as_mut().unwrap().push(EmitMsg {
                 id,
                 by: self.curr_node,
             })

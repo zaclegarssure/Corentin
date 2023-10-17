@@ -8,10 +8,7 @@ use bevy::{
 };
 use tinyset::{SetU64, SetUsize};
 
-use self::{
-    global_channel::{shared_queue, SyncRec, SyncSender},
-    msg::{CoroStatus, EmitMsg, NewCoroutine, SignalId},
-};
+use self::msg::{CoroStatus, EmitMsg, NewCoroutine, SignalId};
 
 use super::{
     function_coroutine::{
@@ -23,10 +20,9 @@ use super::{
     Coroutine, HeapCoro,
 };
 
-pub mod global_channel;
 pub mod msg;
 
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub struct Executor {
     ids: Ids,
     coroutines: HashMap<Id, HeapCoro>,
@@ -37,26 +33,6 @@ pub struct Executor {
     waiting_on_signal: HashMap<SignalId, SetU64>,
     scope_ownership: HashMap<Id, SetU64>,
     is_awaited_by: HashMap<Id, Id>,
-    new_coro_channel: (SyncSender<NewCoroutine>, SyncRec<NewCoroutine>),
-    signal_channel: (SyncSender<EmitMsg>, SyncRec<EmitMsg>),
-}
-
-impl Default for Executor {
-    fn default() -> Self {
-        Self {
-            ids: Default::default(),
-            coroutines: Default::default(),
-            waiting_on_tick: Default::default(),
-            waiting_on_time: Default::default(),
-            waiting_on_all: Default::default(),
-            waiting_on_first: Default::default(),
-            waiting_on_signal: Default::default(),
-            scope_ownership: Default::default(),
-            is_awaited_by: Default::default(),
-            new_coro_channel: shared_queue(),
-            signal_channel: shared_queue(),
-        }
-    }
 }
 
 // SAFETY: The [`Executor`] can only be accessed througth an exclusive
@@ -131,6 +107,9 @@ impl Executor {
             .map(|c_id| (c_id, parents.add_root(c_id)))
             .collect();
 
+        let mut new_coro = Vec::new();
+        let mut emit_signal = Vec::new();
+
         while let Some((coro_id, node)) = ready_coro.pop_front() {
             self.resume(
                 coro_id,
@@ -138,6 +117,8 @@ impl Executor {
                 &mut ready_coro,
                 &mut parents,
                 &mut signals,
+                &mut new_coro,
+                &mut emit_signal,
                 world,
             );
         }
@@ -146,6 +127,7 @@ impl Executor {
     }
 
     /// Run a specific coroutine and it's children.
+    #[allow(clippy::too_many_arguments)]
     fn resume(
         &mut self,
         coro_id: Id,
@@ -153,6 +135,8 @@ impl Executor {
         ready_coro: &mut VecDeque<(Id, usize)>,
         parents: &mut ParentTable,
         signal_table: &mut HashMap<SignalId, usize>,
+        new_coro: &mut Vec<NewCoroutine>,
+        emit_signal: &mut Vec<EmitMsg>,
         world: &mut World,
     ) {
         if !self.ids.contains(coro_id) {
@@ -171,8 +155,8 @@ impl Executor {
             world,
             &self.ids,
             coro_node,
-            self.new_coro_channel.0.clone(),
-            self.signal_channel.0.clone(),
+            new_coro,
+            emit_signal,
         );
 
         // TODO Signals
@@ -183,7 +167,7 @@ impl Executor {
             coroutine,
             is_owned_by,
             should_start_now,
-        } in unsafe { self.new_coro_channel.1.recv_all() }
+        } in new_coro.drain(..)
         {
             self.coroutines.insert(id, coroutine);
 
@@ -200,7 +184,7 @@ impl Executor {
             }
         }
 
-        for EmitMsg { id, by } in unsafe { self.signal_channel.1.recv_all() } {
+        for EmitMsg { id, by } in emit_signal.drain(..) {
             signal_table.insert(id, by);
             if let Some(children) = self.waiting_on_signal.remove(&id) {
                 for c in children {
@@ -298,7 +282,7 @@ impl Executor {
     pub fn add_function_coroutine<Marker: 'static, T, C>(
         &mut self,
         owner: Option<Entity>,
-        world: &mut World,
+        world: &World,
         coroutine: C,
     ) where
         C: CoroutineParamFunction<Marker, T>,
