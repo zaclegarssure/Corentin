@@ -7,6 +7,8 @@ use std::future::Future;
 
 use std::pin::Pin;
 
+use std::ptr::null;
+use std::ptr::null_mut;
 use std::task::Context;
 use std::task::Poll;
 
@@ -14,7 +16,6 @@ use pin_project::pin_project;
 
 use self::once_channel::OnceSender;
 use self::resume::Resume;
-use self::scope::ResumeParam;
 use self::scope::Scope;
 
 use super::coro_param::CoroParam;
@@ -38,6 +39,7 @@ pub mod handle;
 pub mod once_channel;
 pub mod resume;
 pub mod scope;
+pub mod coro_param;
 
 pub mod prelude {
     #[doc(hidden)]
@@ -233,4 +235,74 @@ all_tuples!(impl_coro_function, 0, 16, P);
 enum CoroState {
     Halted,
     Running,
+}
+
+struct ResumeParam {
+    world: *mut World,
+    ids: *const Ids,
+    curr_node: usize,
+    yield_sender: Option<CoroStatus>,
+    new_coro_sender: *mut Vec<NewCoroutine>,
+    emit_sender: *mut Vec<EmitMsg>,
+    commands: *mut CommandQueue,
+}
+
+impl Default for ResumeParam {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// General safety comment: I don't exaclty know if all that is safe...
+/// but normally [`ResumeParam`] can only be accessed via the scope
+/// when the future is polled. Meaning that all the pointers
+/// are valid, and the values are currently owned by the `ResumeParam`.
+impl ResumeParam {
+    pub fn new() -> Self {
+        Self {
+            world: null_mut(),
+            ids: null(),
+            curr_node: 0,
+            yield_sender: None,
+            new_coro_sender: null_mut(),
+            emit_sender: null_mut(),
+            commands: null_mut(),
+        }
+    }
+
+    //pub fn reset(&mut self) {
+    //    *self = Self::new();
+    //}
+
+    //pub fn world_raw(&self) -> *mut World {
+    //    self.world
+    //}
+
+    //pub fn alloc_id(&self) -> Id {
+    //    // Safety: See general comment.
+    //    unsafe { self.ids.as_ref() }.unwrap().allocate_id()
+    //}
+
+    //pub fn send_yield(&mut self, msg: CoroStatus) {
+    //    self.yield_sender = Some(msg);
+    //}
+
+    //pub fn send_new_coro(&mut self, new_coro: NewCoroutine) {
+    //    unsafe {
+    //        self.new_coro_sender.as_mut().unwrap().push(new_coro);
+    //    }
+    //}
+
+    //pub fn emit_signal(&mut self, id: SignalId) {
+    //    unsafe {
+    //        self.emit_sender.as_mut().unwrap().push(EmitMsg {
+    //            id,
+    //            by: self.curr_node,
+    //        })
+    //    }
+    //}
+
+    //pub fn curr_node(&self) -> usize {
+    //    self.curr_node
+    //}
 }

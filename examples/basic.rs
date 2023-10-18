@@ -15,6 +15,7 @@ fn setup_scene(
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut commands: Commands,
 ) {
+
     commands.spawn(Camera2dBundle::default());
 
     // Circle
