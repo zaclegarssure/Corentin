@@ -18,7 +18,6 @@ use super::{
     await_all::AwaitAll,
     await_first::AwaitFirst,
     await_time::{DurationFuture, NextTick},
-    deferred::DeferredOps,
     handle::{CoroHandle, HandleTuple},
     once_channel::{sync_once_channel, OnceSender},
     resume::Resume,
@@ -283,3 +282,51 @@ impl Scope {
 }
 
 unsafe impl Send for Scope {}
+
+pub struct DeferredOps<'a> {
+    scope: &'a mut Scope,
+}
+
+impl<'a> DeferredOps<'a> {
+    pub fn new(scope: &'a mut Scope) -> Self {
+        Self { scope }
+    }
+
+    pub fn commands(&'a mut self, f: impl FnOnce(Commands<'a, 'a>)) {
+        f(self.scope.commands())
+    }
+
+    pub fn spawn_local(&mut self) {
+        todo!()
+    }
+}
+
+pub struct DefferedLocal<'a> {
+    id: Entity,
+    scope: &'a mut Scope,
+}
+
+impl<'a> DefferedLocal<'a> {
+    pub fn id(self) -> Entity {
+        self.id
+    }
+
+    pub fn bind_coroutine<Marker: 'static, T, C>(self, coroutine: C) -> CoroHandle<T>
+    where
+        C: CoroutineParamFunction<Marker, T>,
+        T: Sync + Send + 'static,
+    {
+        let (sender, receiver) = sync_once_channel();
+        let id = self
+            .scope
+            .build_coroutine(
+                Some(self.id),
+                false,
+                Some(self.scope.id),
+                Some(sender),
+                coroutine,
+            )
+            .unwrap();
+        CoroHandle::Waiting { id, receiver }
+    }
+}
