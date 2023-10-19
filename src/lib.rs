@@ -2,15 +2,16 @@ use std::pin::Pin;
 
 use bevy::ecs::component::ComponentId;
 
+use bevy::ecs::world::unsafe_world_cell::UnsafeWorldCell;
 use bevy::prelude::Entity;
 use bevy::prelude::World;
 use bevy::utils::synccell::SyncCell;
 use bevy::utils::HashMap;
+use executor::msg::YieldMsg;
 use global_channel::Channel;
 use global_channel::CommandChannel;
 use tinyset::SetUsize;
 
-use self::executor::msg::CoroStatus;
 use self::executor::msg::EmitMsg;
 use self::executor::msg::NewCoroutine;
 
@@ -51,7 +52,37 @@ pub trait Coroutine: Send + 'static {
         emit_channel: &Channel<EmitMsg>,
         new_coro_channel: &Channel<NewCoroutine>,
         commands_channel: &CommandChannel,
-    ) -> CoroStatus;
+        yield_channel: &Channel<YieldMsg>,
+    ) {
+        // Safety: We have exclusive access to the `world`.
+        unsafe {
+            self.resume_unsafe(
+                world.as_unsafe_world_cell(),
+                ids,
+                curr_node,
+                emit_channel,
+                new_coro_channel,
+                commands_channel,
+                yield_channel,
+            );
+        }
+    }
+
+    /// Resume this coroutine, but with an [`UnsafeWorldCell`] to access the [`World`].
+    ///
+    /// # Safety
+    /// The caller is responsible for ensuring that not conflicting access
+    /// to the world can take place.
+    unsafe fn resume_unsafe(
+        self: Pin<&mut Self>,
+        world: UnsafeWorldCell<'_>,
+        ids: &Ids,
+        curr_node: usize,
+        emit_channel: &Channel<EmitMsg>,
+        new_coro_channel: &Channel<NewCoroutine>,
+        commands_channel: &CommandChannel,
+        yield_channel: &Channel<YieldMsg>,
+    );
 
     /// Return true, if this coroutine is still valid. If it is not, it should be despawned.
     /// Should be called before [`resume`], to avoid any panic.

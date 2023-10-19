@@ -15,6 +15,7 @@ use pin_project::pin_project;
 
 use crate::executor::msg::EmitMsg;
 use crate::executor::msg::NewCoroutine;
+use crate::executor::msg::YieldMsg;
 use crate::global_channel::Channel;
 use crate::global_channel::CommandChannel;
 
@@ -89,22 +90,24 @@ where
     T: Send + Sync + 'static,
     F: CoroutineParamFunction<Marker, T>,
 {
-    fn resume(
+    unsafe fn resume_unsafe(
         self: Pin<&mut Self>,
-        world: &mut World,
+        world: UnsafeWorldCell<'_>,
         ids: &Ids,
         curr_node: usize,
         emit_channel: &Channel<EmitMsg>,
         new_coro_channel: &Channel<NewCoroutine>,
         commands_channel: &CommandChannel,
-    ) -> CoroStatus {
+        yield_channel: &Channel<YieldMsg>,
+    ) {
         let waker = waker::create();
         // Dummy context
         let mut cx = Context::from_waker(&waker);
 
         let this = self.project();
 
-        let world = world as *mut _;
+        // Safety: Idk
+        let world = world.world_mut() as *mut _;
         let ids = ids as *const _;
         let emit_channel = emit_channel as *const _;
         let new_coro_channel = new_coro_channel as *const _;
@@ -131,17 +134,25 @@ where
                     if let Some(sender) = this.result_sender.take() {
                         sender.send(t);
                     }
-                    CoroStatus::Done
+                    yield_channel.send(YieldMsg {
+                        id: *this.id,
+                        node: curr_node,
+                        status: CoroStatus::Done,
+                    });
                 }
                 _ => {
-                    let yield_ = this
+                    let status = this
                         .resume_param
                         .get_mut()
                         .yield_sender
                         .take()
                         .expect(ERR_WRONGAWAIT);
                     this.resume_param.set(ResumeParam::new());
-                    yield_
+                    yield_channel.send(YieldMsg {
+                        id: *this.id,
+                        node: curr_node,
+                        status,
+                    });
                 }
             }
         }

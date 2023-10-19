@@ -13,7 +13,7 @@ use crate::{
     global_channel::{Channel, CommandChannel},
 };
 
-use self::msg::{CoroStatus, EmitMsg, NewCoroutine, SignalId};
+use self::msg::{CoroStatus, EmitMsg, NewCoroutine, SignalId, YieldMsg};
 
 use super::{
     function_coroutine::{resume::Resume, scope::Scope, CoroutineParamFunction, FunctionCoroutine},
@@ -37,6 +37,7 @@ pub struct Executor {
     new_coro_channel: Channel<NewCoroutine>,
     signal_channel: Channel<EmitMsg>,
     commands_channel: CommandChannel,
+    yield_channel: Channel<YieldMsg>,
 }
 
 // SAFETY: The [`Executor`] can only be accessed througth an exclusive
@@ -113,14 +114,29 @@ impl Executor {
 
         while !ready_coro.is_empty() {
             while let Some((coro_id, node)) = ready_coro.pop_front() {
-                self.resume(
-                    coro_id,
-                    node,
-                    &mut ready_coro,
-                    &mut parents,
-                    &mut signals,
-                    world,
-                );
+                {
+                    if !self.ids.contains(coro_id) {
+                        continue;
+                    }
+
+                    let coro = self.coroutines.get_mut(&coro_id).unwrap().get();
+
+                    if !coro.is_valid(world) {
+                        self.cancel(coro_id);
+                        continue;
+                    }
+
+                    Coroutine::resume(
+                        coro.as_mut(),
+                        world,
+                        &self.ids,
+                        node,
+                        &self.signal_channel,
+                        &self.new_coro_channel,
+                        &self.commands_channel,
+                        &self.yield_channel,
+                    );
+                };
             }
 
             self.process_channels(&mut ready_coro, &mut parents, &mut signals);
@@ -128,81 +144,6 @@ impl Executor {
 
         self.ids.flush();
         self.commands_channel.apply(world);
-    }
-
-    /// Run a specific coroutine and it's children.
-    #[allow(clippy::too_many_arguments)]
-    fn resume(
-        &mut self,
-        coro_id: Id,
-        coro_node: usize,
-        ready_coro: &mut VecDeque<(Id, usize)>,
-        parents: &mut ParentTable,
-        signal_table: &mut HashMap<SignalId, usize>,
-        world: &mut World,
-    ) {
-        if !self.ids.contains(coro_id) {
-            return;
-        }
-
-        let coro = self.coroutines.get_mut(&coro_id).unwrap().get();
-
-        if !coro.as_mut().is_valid(world) {
-            self.cancel(coro_id);
-            return;
-        }
-
-        let status = Coroutine::resume(
-            coro.as_mut(),
-            world,
-            &self.ids,
-            coro_node,
-            &self.signal_channel,
-            &self.new_coro_channel,
-            &self.commands_channel,
-        );
-
-        // TODO Signals
-
-        let node = coro_node;
-        let id = coro_id;
-
-        match status {
-            CoroStatus::Done => {
-                self.mark_as_done(id, node, ready_coro, parents);
-            }
-            CoroStatus::Tick => self.waiting_on_tick.push_back(id),
-            CoroStatus::Duration(d) => self.waiting_on_time.push_back((id, d)),
-            CoroStatus::First(handlers) => {
-                self.waiting_on_first.insert(id, handlers.clone());
-                for handler in handlers.iter() {
-                    self.is_awaited_by.insert(Id::from_bits(handler), id);
-                }
-            }
-            CoroStatus::All(handlers) => {
-                self.waiting_on_all.insert(id, handlers.clone());
-                for handler in handlers.iter() {
-                    self.is_awaited_by.insert(Id::from_bits(handler), id);
-                }
-            }
-            CoroStatus::Cancel => {
-                self.cancel(id);
-            }
-            CoroStatus::Signal(signal_id) => {
-                if let Some(writer) = signal_table.get(&signal_id) {
-                    if !parents.is_parent(*writer, coro_node) {
-                        let node = parents.add_child(*writer, coro_id);
-                        ready_coro.push_back((coro_id, node));
-                        return;
-                    }
-                }
-
-                self.waiting_on_signal
-                    .entry(signal_id)
-                    .or_default()
-                    .insert(coro_id.to_bits());
-            }
-        };
     }
 
     /// Mark a coroutine as done, and properly handles cleanup.
@@ -313,6 +254,45 @@ impl Executor {
                     ready_coro.push_back((id, node));
                 }
             }
+        }
+
+        for YieldMsg { id, node, status } in self.yield_channel.receive() {
+            match status {
+                CoroStatus::Done => {
+                    self.mark_as_done(id, node, ready_coro, parents);
+                }
+                CoroStatus::Tick => self.waiting_on_tick.push_back(id),
+                CoroStatus::Duration(d) => self.waiting_on_time.push_back((id, d)),
+                CoroStatus::First(handlers) => {
+                    self.waiting_on_first.insert(id, handlers.clone());
+                    for handler in handlers.iter() {
+                        self.is_awaited_by.insert(Id::from_bits(handler), id);
+                    }
+                }
+                CoroStatus::All(handlers) => {
+                    self.waiting_on_all.insert(id, handlers.clone());
+                    for handler in handlers.iter() {
+                        self.is_awaited_by.insert(Id::from_bits(handler), id);
+                    }
+                }
+                CoroStatus::Cancel => {
+                    self.cancel(id);
+                }
+                CoroStatus::Signal(signal_id) => {
+                    if let Some(writer) = signal_table.get(&signal_id) {
+                        if !parents.is_parent(*writer, node) {
+                            let node = parents.add_child(*writer, id);
+                            ready_coro.push_back((id, node));
+                            return;
+                        }
+                    }
+
+                    self.waiting_on_signal
+                        .entry(signal_id)
+                        .or_default()
+                        .insert(id.to_bits());
+                }
+            };
         }
     }
 }

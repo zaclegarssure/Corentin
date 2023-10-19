@@ -20,12 +20,6 @@ pub struct YieldMsg {
     pub status: CoroStatus,
 }
 
-impl YieldMsg {
-    pub fn new(id: Id, node: usize, status: CoroStatus) -> Self {
-        Self { id, node, status }
-    }
-}
-
 /// The status of a [`Coroutine`] after being resumed.
 pub enum CoroStatus {
     /// Get resumed after one tick
