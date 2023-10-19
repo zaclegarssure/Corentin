@@ -106,7 +106,7 @@ impl Scope {
         C: CoroutineParamFunction<Marker, T>,
         T: Sync + Send + 'static,
     {
-        self.build_coroutine(None, true, Some(self.id), None, coroutine);
+        self.build_coroutine(self.owner, true, Some(self.id), None, coroutine);
     }
 
     /// Start the `coroutine` when reaching the next `await`, and returns a [`CoroHandle`] to it.
@@ -132,7 +132,7 @@ impl Scope {
         T: Sync + Send + 'static,
     {
         let (result_sender, receiver) = sync_once_channel();
-        let id = self.build_coroutine(None, true, None, Some(result_sender), coroutine)?;
+        let id = self.build_coroutine(self.owner, true, None, Some(result_sender), coroutine)?;
         Some(CoroHandle::Waiting { id, receiver })
     }
 
