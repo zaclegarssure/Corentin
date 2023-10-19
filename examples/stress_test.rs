@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use bevy::{prelude::*, sprite::MaterialMesh2dBundle, diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin}};
-use corentin::{prelude::*, coro_param::on_change};
+use corentin::prelude::*;
 
 fn main() {
     App::new()
