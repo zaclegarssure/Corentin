@@ -16,6 +16,7 @@ use pin_project::pin_project;
 use crate::executor::msg::EmitMsg;
 use crate::executor::msg::NewCoroutine;
 use crate::global_channel::Channel;
+use crate::global_channel::CommandChannel;
 
 use self::coro_param::CoroParam;
 use self::once_channel::OnceSender;
@@ -95,6 +96,7 @@ where
         curr_node: usize,
         emit_channel: &Channel<EmitMsg>,
         new_coro_channel: &Channel<NewCoroutine>,
+        commands_channel: &CommandChannel,
     ) -> CoroStatus {
         let waker = waker::create();
         // Dummy context
@@ -106,6 +108,7 @@ where
         let ids = ids as *const _;
         let emit_channel = emit_channel as *const _;
         let new_coro_channel = new_coro_channel as *const _;
+        let commands_channel = commands_channel as *const _;
 
         // Safety: The only unsafe operations are swapping the resume arguments back and forth
         // All the pointers are valid since we get them from references, and we are never doing
@@ -118,6 +121,7 @@ where
                 yield_sender: None,
                 emit_channel,
                 new_coro_channel,
+                commands_channel,
             });
 
             let res = this.future.poll(&mut cx);
@@ -242,6 +246,7 @@ pub(crate) struct ResumeParam {
     yield_sender: Option<CoroStatus>,
     emit_channel: *const Channel<EmitMsg>,
     new_coro_channel: *const Channel<NewCoroutine>,
+    commands_channel: *const CommandChannel,
 }
 
 impl Default for ResumeParam {
@@ -263,6 +268,7 @@ impl ResumeParam {
             yield_sender: None,
             emit_channel: null(),
             new_coro_channel: null(),
+            commands_channel: null(),
         }
     }
 }

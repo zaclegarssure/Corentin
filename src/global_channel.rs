@@ -1,5 +1,12 @@
 use std::cell::UnsafeCell;
 
+use bevy::{
+    ecs::{
+        entity::Entities,
+        system::{Command, CommandQueue},
+    },
+    prelude::{Commands, World},
+};
 use thread_local::ThreadLocal;
 
 pub struct Channel<T: Send> {
@@ -26,5 +33,26 @@ impl<T: Send> Channel<T> {
             .iter_mut()
             .flat_map(|q| q.get_mut().drain(..))
             .collect()
+    }
+}
+
+#[derive(Default)]
+pub struct CommandChannel {
+    storage: ThreadLocal<UnsafeCell<CommandQueue>>,
+}
+
+impl CommandChannel {
+    pub fn add(&self, _c: impl Command) {}
+
+    pub fn commands<'a>(&'a self, entities: &'a Entities) -> Commands<'_, '_> {
+        let queue = unsafe { self.storage.get_or_default().get().as_mut().unwrap() };
+
+        Commands::new_from_entities(queue, entities)
+    }
+
+    pub fn apply(&mut self, world: &mut World) {
+        for queue in &mut self.storage {
+            queue.get_mut().apply(world);
+        }
     }
 }

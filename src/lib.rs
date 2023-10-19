@@ -7,6 +7,7 @@ use bevy::prelude::World;
 use bevy::utils::synccell::SyncCell;
 use bevy::utils::HashMap;
 use global_channel::Channel;
+use global_channel::CommandChannel;
 use tinyset::SetUsize;
 
 use self::executor::msg::CoroStatus;
@@ -49,6 +50,7 @@ pub trait Coroutine: Send + 'static {
         curr_node: usize,
         emit_channel: &Channel<EmitMsg>,
         new_coro_channel: &Channel<NewCoroutine>,
+        commands_channel: &CommandChannel,
     ) -> CoroStatus;
 
     /// Return true, if this coroutine is still valid. If it is not, it should be despawned.
@@ -355,26 +357,26 @@ mod test {
         });
     }
 
-    //#[test]
-    //fn applying_commands_from_coroutine() {
-    //    let mut world = World::new();
-    //    world.init_resource::<Executor>();
-    //    world.insert_resource(Time::new(Instant::now()));
+    #[test]
+    fn applying_commands_from_coroutine() {
+        let mut world = World::new();
+        world.init_resource::<Executor>();
+        world.insert_resource(Time::new(Instant::now()));
 
-    //    root_coroutine(|mut s: Scope| async move {
-    //        let e = s.commands().spawn(ExampleComponent(0)).id();
-    //        s.next_tick().await;
-    //        s.commands().entity(e).remove::<ExampleComponent>();
-    //    })
-    //    .apply(&mut world);
+        root_coroutine(|mut s: Scope| async move {
+            let e = s.commands().spawn(ExampleComponent(0)).id();
+            s.next_tick().await;
+            s.commands().entity(e).remove::<ExampleComponent>();
+        })
+        .apply(&mut world);
 
-    //    world.resource_scope(|world, mut executor: Mut<Executor>| {
-    //        let mut state = world.query::<&ExampleComponent>();
-    //        assert_eq!(state.iter(world).len(), 0);
-    //        executor.tick(world);
-    //        assert_eq!(state.iter(world).len(), 1);
-    //        executor.tick(world);
-    //        assert_eq!(state.iter(world).len(), 0);
-    //    });
-    //}
+        world.resource_scope(|world, mut executor: Mut<Executor>| {
+            let mut state = world.query::<&ExampleComponent>();
+            assert_eq!(state.iter(world).len(), 0);
+            executor.tick(world);
+            assert_eq!(state.iter(world).len(), 1);
+            executor.tick(world);
+            assert_eq!(state.iter(world).len(), 0);
+        });
+    }
 }

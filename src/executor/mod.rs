@@ -1,9 +1,5 @@
-use bevy::{ecs::system::CommandQueue, prelude::Entity, time::Time, utils::synccell::SyncCell};
-use std::{
-    collections::VecDeque,
-    ops::Index,
-    sync::mpsc::{channel, Receiver, Sender},
-};
+use bevy::{prelude::Entity, time::Time, utils::synccell::SyncCell};
+use std::{collections::VecDeque, ops::Index};
 
 use bevy::{
     prelude::{Resource, World},
@@ -12,7 +8,10 @@ use bevy::{
 };
 use tinyset::{SetU64, SetUsize};
 
-use crate::{function_coroutine::ResumeParam, global_channel::Channel};
+use crate::{
+    function_coroutine::ResumeParam,
+    global_channel::{Channel, CommandChannel},
+};
 
 use self::msg::{CoroStatus, EmitMsg, NewCoroutine, SignalId};
 
@@ -24,7 +23,7 @@ use super::{
 
 pub mod msg;
 
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub struct Executor {
     ids: Ids,
     coroutines: HashMap<Id, HeapCoro>,
@@ -37,26 +36,7 @@ pub struct Executor {
     is_awaited_by: HashMap<Id, Id>,
     new_coro_channel: Channel<NewCoroutine>,
     signal_channel: Channel<EmitMsg>,
-    commands_channel: (Sender<CommandQueue>, Receiver<CommandQueue>),
-}
-
-impl Default for Executor {
-    fn default() -> Self {
-        Self {
-            ids: Default::default(),
-            coroutines: Default::default(),
-            waiting_on_tick: Default::default(),
-            waiting_on_time: Default::default(),
-            waiting_on_all: Default::default(),
-            waiting_on_first: Default::default(),
-            waiting_on_signal: Default::default(),
-            scope_ownership: Default::default(),
-            is_awaited_by: Default::default(),
-            new_coro_channel: Channel::default(),
-            signal_channel: Channel::default(),
-            commands_channel: channel(),
-        }
-    }
+    commands_channel: CommandChannel,
 }
 
 // SAFETY: The [`Executor`] can only be accessed througth an exclusive
@@ -147,9 +127,7 @@ impl Executor {
         }
 
         self.ids.flush();
-        for mut queue in self.commands_channel.1.try_iter() {
-            queue.apply(world);
-        }
+        self.commands_channel.apply(world);
     }
 
     /// Run a specific coroutine and it's children.
@@ -181,6 +159,7 @@ impl Executor {
             coro_node,
             &self.signal_channel,
             &self.new_coro_channel,
+            &self.commands_channel,
         );
 
         // TODO Signals
@@ -282,12 +261,7 @@ impl Executor {
 
         let id = self.ids.allocate_id();
 
-        let new_scope = Scope::new(
-            id,
-            owner,
-            resume_param.get_raw(),
-            self.commands_channel.0.clone(),
-        );
+        let new_scope = Scope::new(id, owner, resume_param.get_raw());
 
         if let Some(c) = FunctionCoroutine::new(
             new_scope,

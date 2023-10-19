@@ -1,7 +1,7 @@
-use std::{ptr::NonNull, sync::mpsc::Sender, time::Duration};
+use std::{ptr::NonNull, time::Duration};
 
 use bevy::{
-    ecs::{system::CommandQueue, world::unsafe_world_cell::UnsafeWorldCell},
+    ecs::world::unsafe_world_cell::UnsafeWorldCell,
     prelude::{Commands, Entity},
     utils::synccell::SyncCell,
 };
@@ -28,21 +28,14 @@ pub struct Scope {
     id: Id,
     owner: Option<Entity>,
     resume_param: NonNull<ResumeParam>,
-    command_sender: Sender<CommandQueue>,
 }
 
 impl Scope {
-    pub(crate) fn new(
-        id: Id,
-        owner: Option<Entity>,
-        resume_param: NonNull<ResumeParam>,
-        command_sender: Sender<CommandQueue>,
-    ) -> Self {
+    pub(crate) fn new(id: Id, owner: Option<Entity>, resume_param: NonNull<ResumeParam>) -> Self {
         Self {
             id,
             owner,
             resume_param,
-            command_sender,
         }
     }
 
@@ -144,9 +137,17 @@ impl Scope {
         self.owner
     }
 
-    //pub fn commands(&mut self) -> Commands<'_, '_> {
-    //    todo!()
-    //}
+    pub fn commands(&mut self) -> Commands<'_, '_> {
+        unsafe {
+            let entities = self.world_cell().entities();
+            self.resume_param
+                .as_ref()
+                .commands_channel
+                .as_ref()
+                .unwrap()
+                .commands(entities)
+        }
+    }
 
     //pub fn deferred(&mut self) -> DeferredOps<'_> {
     //    DeferredOps::new(self)
@@ -229,7 +230,6 @@ impl Scope {
             id: self.alloc_id(),
             owner,
             resume_param: resume_param.get_raw(),
-            command_sender: self.command_sender.clone(),
         };
 
         let new_id = new_scope.id;
@@ -261,57 +261,57 @@ impl Scope {
 
 unsafe impl Send for Scope {}
 
-pub struct DeferredOps<'a> {
-    scope: &'a Scope,
-    queue: CommandQueue,
-}
-
-impl<'a> DeferredOps<'a> {
-    pub fn new(scope: &'a mut Scope) -> Self {
-        Self {
-            scope,
-            queue: CommandQueue::default(),
-        }
-    }
-
-    pub fn apply(self) {
-        self.scope.command_sender.send(self.queue).unwrap();
-    }
-
-    pub fn commands(&mut self, f: impl FnOnce(Commands<'_, '_>)) -> &mut Self {
-        let entities = self.scope.world_cell().entities();
-        let commands = Commands::new_from_entities(&mut self.queue, entities);
-        f(commands);
-        self
-    }
-
-    pub fn bind_coroutine<Marker: 'static, T, C>(
-        &'a mut self,
-        to: Entity,
-        coroutine: C,
-    ) -> CoroHandle<T>
-    where
-        C: CoroutineParamFunction<Marker, T>,
-        T: Sync + Send + 'static,
-    {
-        let (sender, receiver) = sync_once_channel();
-        let id = self
-            .scope
-            .build_coroutine(
-                Some(to),
-                false,
-                Some(self.scope.id),
-                Some(sender),
-                coroutine,
-            )
-            .unwrap();
-        CoroHandle::Waiting { id, receiver }
-    }
-
-    //pub fn spawn_local(&mut self) -> DefferedLocal<'_> {
-    //    todo!()
-    //}
-}
+//pub struct DeferredOps<'a> {
+//    scope: &'a Scope,
+//    queue: CommandQueue,
+//}
+//
+//impl<'a> DeferredOps<'a> {
+//    pub fn new(scope: &'a mut Scope) -> Self {
+//        Self {
+//            scope,
+//            queue: CommandQueue::default(),
+//        }
+//    }
+//
+//    pub fn apply(self) {
+//        self.scope.command_sender.send(self.queue).unwrap();
+//    }
+//
+//    pub fn commands(&mut self, f: impl FnOnce(Commands<'_, '_>)) -> &mut Self {
+//        let entities = self.scope.world_cell().entities();
+//        let commands = Commands::new_from_entities(&mut self.queue, entities);
+//        f(commands);
+//        self
+//    }
+//
+//    pub fn bind_coroutine<Marker: 'static, T, C>(
+//        &'a mut self,
+//        to: Entity,
+//        coroutine: C,
+//    ) -> CoroHandle<T>
+//    where
+//        C: CoroutineParamFunction<Marker, T>,
+//        T: Sync + Send + 'static,
+//    {
+//        let (sender, receiver) = sync_once_channel();
+//        let id = self
+//            .scope
+//            .build_coroutine(
+//                Some(to),
+//                false,
+//                Some(self.scope.id),
+//                Some(sender),
+//                coroutine,
+//            )
+//            .unwrap();
+//        CoroHandle::Waiting { id, receiver }
+//    }
+//
+//    //pub fn spawn_local(&mut self) -> DefferedLocal<'_> {
+//    //    todo!()
+//    //}
+//}
 
 //pub struct DefferedLocal<'a> {
 //    id: Entity,
