@@ -1,9 +1,4 @@
-use bevy::{
-    ecs::{system::CommandQueue, world::unsafe_world_cell::UnsafeWorldCell},
-    utils::all_tuples,
-};
-
-use crate::executor::msg::EmitMsg;
+use bevy::{ecs::world::unsafe_world_cell::UnsafeWorldCell, utils::all_tuples};
 
 use super::CoroMeta;
 
@@ -34,6 +29,7 @@ macro_rules! impl_coro_param {
     ($($param: ident),*) => {
         #[allow(non_snake_case, unused_parens, unused_variables)]
         impl<$($param: CoroParam),*> CoroParam for ($($param,)*) {
+
             fn init(world: UnsafeWorldCell<'_>, meta: &mut CoroMeta) -> Option<Self> {
                 $(let $param = $param::init(world, meta)?;)*
 

@@ -1,4 +1,3 @@
-use bevy::ecs::system::CommandQueue;
 use bevy::ecs::world::World;
 
 use bevy::ecs::world::unsafe_world_cell::UnsafeWorldCell;
@@ -13,6 +12,10 @@ use std::task::Context;
 use std::task::Poll;
 
 use pin_project::pin_project;
+
+use crate::executor::msg::EmitMsg;
+use crate::executor::msg::NewCoroutine;
+use crate::global_channel::Channel;
 
 use self::coro_param::CoroParam;
 use self::once_channel::OnceSender;
@@ -33,11 +36,11 @@ pub mod await_change;
 pub mod await_first;
 pub mod await_signal;
 pub mod await_time;
+pub mod coro_param;
 pub mod handle;
 pub mod once_channel;
 pub mod resume;
 pub mod scope;
-pub mod coro_param;
 
 pub mod prelude {
     #[doc(hidden)]
@@ -90,6 +93,8 @@ where
         world: &mut World,
         ids: &Ids,
         curr_node: usize,
+        emit_channel: &Channel<EmitMsg>,
+        new_coro_channel: &Channel<NewCoroutine>,
     ) -> CoroStatus {
         let waker = waker::create();
         // Dummy context
@@ -99,6 +104,8 @@ where
 
         let world = world as *mut _;
         let ids = ids as *const _;
+        let emit_channel = emit_channel as *const _;
+        let new_coro_channel = new_coro_channel as *const _;
 
         // Safety: The only unsafe operations are swapping the resume arguments back and forth
         // All the pointers are valid since we get them from references, and we are never doing
@@ -109,6 +116,8 @@ where
                 ids,
                 curr_node,
                 yield_sender: None,
+                emit_channel,
+                new_coro_channel,
             });
 
             let res = this.future.poll(&mut cx);
@@ -207,9 +216,6 @@ macro_rules! impl_coro_function {
             Fut: Future<Output = T> + Send + 'static,
             T: Send + Sync + 'static,
         {
-
-
-
             type Future = Fut;
             type Params = ($($param),*);
 
@@ -234,6 +240,8 @@ pub(crate) struct ResumeParam {
     ids: *const Ids,
     curr_node: usize,
     yield_sender: Option<CoroStatus>,
+    emit_channel: *const Channel<EmitMsg>,
+    new_coro_channel: *const Channel<NewCoroutine>,
 }
 
 impl Default for ResumeParam {
@@ -253,6 +261,8 @@ impl ResumeParam {
             ids: null(),
             curr_node: 0,
             yield_sender: None,
+            emit_channel: null(),
+            new_coro_channel: null(),
         }
     }
 }

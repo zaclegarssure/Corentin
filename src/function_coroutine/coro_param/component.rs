@@ -113,10 +113,7 @@ impl<T: Component> Wr<T> {
     pub fn get_mut<'a>(&'a mut self, scope: &'a Scope) -> Mut<'a, T> {
         unsafe {
             let cell = scope.world_cell();
-            let entity = 
-                cell
-                .get_entity(self.owner)
-                .unwrap();
+            let entity = cell.get_entity(self.owner).unwrap();
 
             if entity.contains::<ChangeTracker<T>>() {
                 scope.emit_signal(SignalId {
@@ -125,11 +122,7 @@ impl<T: Component> Wr<T> {
                 });
             }
 
-            cell
-                .get_entity(self.owner)
-                .unwrap()
-                .get_mut::<T>()
-                .unwrap()
+            cell.get_entity(self.owner).unwrap().get_mut::<T>().unwrap()
         }
     }
 }

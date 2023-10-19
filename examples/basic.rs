@@ -1,4 +1,4 @@
-use std::{time::Duration, thread};
+use std::time::Duration;
 
 use bevy::{prelude::*, sprite::MaterialMesh2dBundle};
 use corentin::prelude::*;
@@ -15,7 +15,6 @@ fn setup_scene(
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut commands: Commands,
 ) {
-
     commands.spawn(Camera2dBundle::default());
 
     // Circle

@@ -45,6 +45,7 @@ pub enum CoroStatus {
 }
 
 /// The msg notifying that a [`Signal`] was emitted.
+#[derive(Clone, Copy)]
 pub struct EmitMsg {
     pub id: SignalId,
     pub by: usize,

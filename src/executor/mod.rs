@@ -2,7 +2,7 @@ use bevy::{ecs::system::CommandQueue, prelude::Entity, time::Time, utils::syncce
 use std::{
     collections::VecDeque,
     ops::Index,
-    sync::mpsc::{Receiver, Sender, channel},
+    sync::mpsc::{channel, Receiver, Sender},
 };
 
 use bevy::{
@@ -12,7 +12,7 @@ use bevy::{
 };
 use tinyset::{SetU64, SetUsize};
 
-use crate::function_coroutine::ResumeParam;
+use crate::{function_coroutine::ResumeParam, global_channel::Channel};
 
 use self::msg::{CoroStatus, EmitMsg, NewCoroutine, SignalId};
 
@@ -35,8 +35,9 @@ pub struct Executor {
     waiting_on_signal: HashMap<SignalId, SetU64>,
     scope_ownership: HashMap<Id, SetU64>,
     is_awaited_by: HashMap<Id, Id>,
-    new_coro_channel: (Sender<NewCoroutine>, Receiver<NewCoroutine>),
-    signal_channel: (Sender<EmitMsg>, Receiver<EmitMsg>),
+    new_coro_channel: Channel<NewCoroutine>,
+    signal_channel: Channel<EmitMsg>,
+    commands_channel: (Sender<CommandQueue>, Receiver<CommandQueue>),
 }
 
 impl Default for Executor {
@@ -51,8 +52,9 @@ impl Default for Executor {
             waiting_on_signal: Default::default(),
             scope_ownership: Default::default(),
             is_awaited_by: Default::default(),
-            new_coro_channel: channel(),
-            signal_channel: channel(),
+            new_coro_channel: Channel::default(),
+            signal_channel: Channel::default(),
+            commands_channel: channel(),
         }
     }
 }
@@ -129,19 +131,25 @@ impl Executor {
             .map(|c_id| (c_id, parents.add_root(c_id)))
             .collect();
 
-        while let Some((coro_id, node)) = ready_coro.pop_front() {
-            self.resume(
-                coro_id,
-                node,
-                &mut ready_coro,
-                &mut parents,
-                &mut signals,
-                world,
-            );
+        while !ready_coro.is_empty() {
+            while let Some((coro_id, node)) = ready_coro.pop_front() {
+                self.resume(
+                    coro_id,
+                    node,
+                    &mut ready_coro,
+                    &mut parents,
+                    &mut signals,
+                    world,
+                );
+            }
+
+            self.process_channels(&mut ready_coro, &mut parents, &mut signals);
         }
 
         self.ids.flush();
-        //command_queue.apply(world);
+        for mut queue in self.commands_channel.1.try_iter() {
+            queue.apply(world);
+        }
     }
 
     /// Run a specific coroutine and it's children.
@@ -166,43 +174,16 @@ impl Executor {
             return;
         }
 
-        let status = Coroutine::resume(coro.as_mut(), world, &self.ids, coro_node);
+        let status = Coroutine::resume(
+            coro.as_mut(),
+            world,
+            &self.ids,
+            coro_node,
+            &self.signal_channel,
+            &self.new_coro_channel,
+        );
 
         // TODO Signals
-
-        for NewCoroutine {
-            id,
-            ran_after,
-            coroutine,
-            is_owned_by,
-            should_start_now,
-        } in self.new_coro_channel.1.try_iter()
-        {
-            self.coroutines.insert(id, coroutine);
-
-            if let Some(parent) = is_owned_by {
-                self.scope_ownership
-                    .entry(parent)
-                    .or_default()
-                    .insert(id.to_bits());
-            }
-
-            if should_start_now {
-                let next_node = parents.add_child(ran_after, id);
-                ready_coro.push_back((id, next_node));
-            }
-        }
-
-        for EmitMsg { id, by } in self.signal_channel.1.try_iter() {
-            signal_table.insert(id, by);
-            if let Some(children) = self.waiting_on_signal.remove(&id) {
-                for c in children {
-                    let id = Id::from_bits(c);
-                    let node = parents.add_child(coro_node, id);
-                    ready_coro.push_back((id, node));
-                }
-            }
-        }
 
         let node = coro_node;
         let id = coro_id;
@@ -305,8 +286,7 @@ impl Executor {
             id,
             owner,
             resume_param.get_raw(),
-            self.new_coro_channel.0.clone(),
-            self.signal_channel.0.clone(),
+            self.commands_channel.0.clone(),
         );
 
         if let Some(c) = FunctionCoroutine::new(
@@ -319,6 +299,47 @@ impl Executor {
         ) {
             self.add_coroutine(id, SyncCell::new(Box::pin(c)));
         };
+    }
+
+    fn process_channels(
+        &mut self,
+        ready_coro: &mut VecDeque<(Id, usize)>,
+        parents: &mut ParentTable,
+        signal_table: &mut HashMap<SignalId, usize>,
+    ) {
+        for NewCoroutine {
+            id,
+            ran_after,
+            coroutine,
+            is_owned_by,
+            should_start_now,
+        } in self.new_coro_channel.receive()
+        {
+            self.coroutines.insert(id, coroutine);
+
+            if let Some(parent) = is_owned_by {
+                self.scope_ownership
+                    .entry(parent)
+                    .or_default()
+                    .insert(id.to_bits());
+            }
+
+            if should_start_now {
+                let next_node = parents.add_child(ran_after, id);
+                ready_coro.push_back((id, next_node));
+            }
+        }
+
+        for EmitMsg { id, by } in self.signal_channel.receive() {
+            signal_table.insert(id, by);
+            if let Some(children) = self.waiting_on_signal.remove(&id) {
+                for c in children {
+                    let id = Id::from_bits(c);
+                    let node = parents.add_child(by, id);
+                    ready_coro.push_back((id, node));
+                }
+            }
+        }
     }
 }
 

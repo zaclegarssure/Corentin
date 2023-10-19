@@ -1,11 +1,12 @@
 use std::pin::Pin;
 
 use bevy::ecs::component::ComponentId;
-use bevy::ecs::system::CommandQueue;
+
 use bevy::prelude::Entity;
 use bevy::prelude::World;
 use bevy::utils::synccell::SyncCell;
 use bevy::utils::HashMap;
+use global_channel::Channel;
 use tinyset::SetUsize;
 
 use self::executor::msg::CoroStatus;
@@ -17,6 +18,7 @@ use self::id_alloc::Ids;
 pub mod commands;
 pub mod executor;
 pub mod function_coroutine;
+pub mod global_channel;
 pub mod id_alloc;
 pub mod plugin;
 
@@ -45,6 +47,8 @@ pub trait Coroutine: Send + 'static {
         world: &mut World,
         ids: &Ids,
         curr_node: usize,
+        emit_channel: &Channel<EmitMsg>,
+        new_coro_channel: &Channel<NewCoroutine>,
     ) -> CoroStatus;
 
     /// Return true, if this coroutine is still valid. If it is not, it should be despawned.
