@@ -15,7 +15,6 @@ use self::executor::msg::NewCoroutine;
 use self::id_alloc::Ids;
 
 pub mod commands;
-pub mod coro_param;
 pub mod executor;
 pub mod function_coroutine;
 pub mod id_alloc;
@@ -24,9 +23,6 @@ pub mod plugin;
 pub mod prelude {
     #[doc(hidden)]
     pub use crate::function_coroutine::prelude::*;
-
-    #[doc(hidden)]
-    pub use crate::coro_param::prelude::*;
 
     #[doc(hidden)]
     pub use crate::commands::*;
@@ -49,9 +45,6 @@ pub trait Coroutine: Send + 'static {
         world: &mut World,
         ids: &Ids,
         curr_node: usize,
-        next_coro_channel: &mut Vec<NewCoroutine>,
-        emit_signal: &mut Vec<EmitMsg>,
-        commands: &mut CommandQueue,
     ) -> CoroStatus;
 
     /// Return true, if this coroutine is still valid. If it is not, it should be despawned.
@@ -122,20 +115,13 @@ mod test {
 
     use bevy::{
         ecs::system::{Command, EntityCommand},
-        prelude::{Component, Mut},
+        prelude::{Component, Mut, World},
         time::Time,
     };
 
-    use super::{
-        commands::{coroutine, root_coroutine},
-        coro_param::{
-            component::Wr,
-            on_change::{ChangeTracker, OnChange},
-        },
-        executor::Executor,
-        function_coroutine::scope::Scope,
-        *,
-    };
+    use super::prelude::*;
+
+    use super::executor::Executor;
 
     #[derive(Component)]
     struct ExampleComponent(u32);
@@ -365,26 +351,26 @@ mod test {
         });
     }
 
-    #[test]
-    fn applying_commands_from_coroutine() {
-        let mut world = World::new();
-        world.init_resource::<Executor>();
-        world.insert_resource(Time::new(Instant::now()));
+    //#[test]
+    //fn applying_commands_from_coroutine() {
+    //    let mut world = World::new();
+    //    world.init_resource::<Executor>();
+    //    world.insert_resource(Time::new(Instant::now()));
 
-        root_coroutine(|mut s: Scope| async move {
-            let e = s.commands().spawn(ExampleComponent(0)).id();
-            s.next_tick().await;
-            s.commands().entity(e).remove::<ExampleComponent>();
-        })
-        .apply(&mut world);
+    //    root_coroutine(|mut s: Scope| async move {
+    //        let e = s.commands().spawn(ExampleComponent(0)).id();
+    //        s.next_tick().await;
+    //        s.commands().entity(e).remove::<ExampleComponent>();
+    //    })
+    //    .apply(&mut world);
 
-        world.resource_scope(|world, mut executor: Mut<Executor>| {
-            let mut state = world.query::<&ExampleComponent>();
-            assert_eq!(state.iter(world).len(), 0);
-            executor.tick(world);
-            assert_eq!(state.iter(world).len(), 1);
-            executor.tick(world);
-            assert_eq!(state.iter(world).len(), 0);
-        });
-    }
+    //    world.resource_scope(|world, mut executor: Mut<Executor>| {
+    //        let mut state = world.query::<&ExampleComponent>();
+    //        assert_eq!(state.iter(world).len(), 0);
+    //        executor.tick(world);
+    //        assert_eq!(state.iter(world).len(), 1);
+    //        executor.tick(world);
+    //        assert_eq!(state.iter(world).len(), 0);
+    //    });
+    //}
 }

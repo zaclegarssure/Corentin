@@ -1,5 +1,6 @@
 use std::{
     ptr::{null, null_mut, NonNull},
+    sync::mpsc::Sender,
     time::Duration,
 };
 
@@ -34,9 +35,27 @@ pub struct Scope {
     id: Id,
     owner: Option<Entity>,
     resume_param: NonNull<ResumeParam>,
+    new_coro_sender: Sender<NewCoroutine>,
+    emit_sender: Sender<EmitMsg>,
 }
 
 impl Scope {
+    pub(crate) fn new(
+        id: Id,
+        owner: Option<Entity>,
+        resume_param: NonNull<ResumeParam>,
+        new_coro_sender: Sender<NewCoroutine>,
+        emit_sender: Sender<EmitMsg>,
+    ) -> Self {
+        Self {
+            id,
+            owner,
+            resume_param,
+            new_coro_sender,
+            emit_sender,
+        }
+    }
+
     /// Returns a future that resolve once all of the underlying coroutine finishes.
     pub fn all<H: HandleTuple>(&mut self, handles: H) -> AwaitAll<'_, H> {
         AwaitAll::new(self, handles)
@@ -135,17 +154,17 @@ impl Scope {
         self.owner
     }
 
-    pub fn deferred(&mut self) -> DeferredOps<'_> {
-        DeferredOps::new(self)
-    }
+    //pub fn deferred(&mut self) -> DeferredOps<'_> {
+    //    DeferredOps::new(self)
+    //}
 
-    pub fn commands(&mut self) -> Commands<'_, '_> {
-        let queue = unsafe { self.resume_param.as_mut().commands.as_mut().unwrap() };
-        let entities = unsafe { self.resume_param.as_mut().world_cell().entities() };
-        Commands::new_from_entities(queue, entities)
-    }
+    //pub fn commands(&mut self) -> Commands<'_, '_> {
+    //    let queue = unsafe { self.resume_param.as_mut().commands.as_mut().unwrap() };
+    //    let entities = unsafe { self.resume_param.as_mut().world_cell().entities() };
+    //    Commands::new_from_entities(queue, entities)
+    //}
 
-    pub(crate) unsafe fn world_cell(&self) -> UnsafeWorldCell<'_> {
+    pub(crate) fn world_cell(&self) -> UnsafeWorldCell<'_> {
         unsafe {
             self.resume_param
                 .as_ref()
@@ -156,52 +175,39 @@ impl Scope {
         }
     }
 
-    /// Emit the following signal
-    /// # Safety
-    /// Should not be called while anothere concurrent call to the same function occur. (Basically
-    /// a Scope should never be shared between threads.)
-    unsafe fn emit_signal(&self, signal: SignalId) {
-        let by = self.resume_param.as_ref().curr_node;
-        self.resume_param
-            .as_ref()
-            .emit_sender
-            .as_mut()
-            .unwrap()
-            .push(EmitMsg { id: signal, by });
+    /// Emit the given signal
+    pub(crate) fn emit_signal(&self, signal: SignalId) {
+        // Safety: None, fuck it
+        let by = unsafe { self.resume_param.as_ref().curr_node };
+        self.emit_sender.send(EmitMsg { id: signal, by });
     }
 
-    fn yield_(&mut self, status: CoroStatus) {
+    /// Yield with the following status
+    pub(crate) fn yield_(&mut self, status: CoroStatus) {
         // Safety: When polled, the scope owns CoroParam which own each parameter
         unsafe {
             self.resume_param.as_mut().yield_sender = Some(status);
         }
     }
 
-    unsafe fn send_new_coro(&self, new_coro: NewCoroutine) {
-        self.resume_param
-            .as_ref()
-            .new_coro_sender
-            .as_mut()
-            .unwrap()
-            .push(new_coro);
+    /// Send a new coroutine to the executor
+    fn send_new_coro(&self, new_coro: NewCoroutine) {
+        self.new_coro_sender.send(new_coro);
     }
 
-    unsafe fn 
-
-
-
-
-        
-
-
-    pub(crate) fn new(id: Id, owner: Option<Entity>, resume_param: NonNull<ResumeParam>) -> Self {
-        Self {
-            id,
-            owner,
-            resume_param,
+    /// Allocate a new unique coroutine id
+    fn alloc_id(&self) -> Id {
+        unsafe {
+            self.resume_param
+                .as_ref()
+                .ids
+                .as_ref()
+                .unwrap()
+                .allocate_id()
         }
     }
 
+    /// Build a new coroutine with various parameter
     fn build_coroutine<Marker: 'static, T, C>(
         &mut self,
         owner: Option<Entity>,
@@ -214,28 +220,29 @@ impl Scope {
         C: CoroutineParamFunction<Marker, T>,
         T: Sync + Send + 'static,
     {
-        let self_params = self.resume_param_mut();
         let resume_param = Resume::new(ResumeParam::new());
         let new_scope = Self {
-            id: self_params.alloc_id(),
+            id: self.alloc_id(),
             owner,
             resume_param: resume_param.get_raw(),
+            emit_sender: self.emit_sender.clone(),
+            new_coro_sender: self.new_coro_sender.clone(),
         };
 
         let new_id = new_scope.id;
 
         let coroutine = FunctionCoroutine::new(
             new_scope,
-            self_params.world_cell(),
+            self.world_cell(),
             resume_param,
             new_id,
             result_sender,
             coroutine,
         )?;
 
-        self_params.send_new_coro(NewCoroutine {
+        self.send_new_coro(NewCoroutine {
             id: new_id,
-            ran_after: self_params.curr_node(),
+            ran_after: self.curr_node(),
             coroutine: SyncCell::new(Box::pin(coroutine)),
             is_owned_by: parent_scope,
             should_start_now: start_now,
@@ -243,90 +250,94 @@ impl Scope {
 
         Some(new_id)
     }
+
+    fn curr_node(&self) -> usize {
+        unsafe { self.resume_param.as_ref().curr_node }
+    }
 }
 
 unsafe impl Send for Scope {}
 
-pub struct DeferredOps<'a> {
-    scope: &'a mut Scope,
-}
-
-impl<'a> DeferredOps<'a> {
-    pub fn new(scope: &'a mut Scope) -> Self {
-        Self { scope }
-    }
-
-    pub fn commands(&'a mut self, f: impl FnOnce(Commands<'a, 'a>)) {
-        f(self.scope.commands())
-    }
-
-    pub fn bind_coroutine<Marker: 'static, T, C>(
-        &'a mut self,
-        to: Entity,
-        coroutine: C,
-    ) -> CoroHandle<T>
-    where
-        C: CoroutineParamFunction<Marker, T>,
-        T: Sync + Send + 'static,
-    {
-        let (sender, receiver) = sync_once_channel();
-        let id = self
-            .scope
-            .build_coroutine(
-                Some(to),
-                false,
-                Some(self.scope.id),
-                Some(sender),
-                coroutine,
-            )
-            .unwrap();
-        CoroHandle::Waiting { id, receiver }
-    }
-
-    pub fn spawn_local(&mut self) -> DefferedLocal<'_> {
-        todo!()
-    }
-}
-
-pub struct DefferedLocal<'a> {
-    id: Entity,
-    scope: &'a Scope,
-}
-
-impl<'a> DefferedLocal<'a> {
-    pub fn id(self) -> Entity {
-        self.id
-    }
-
-    pub fn bind_coroutine<Marker: 'static, T, C>(self, coroutine: C) -> CoroHandle<T>
-    where
-        C: CoroutineParamFunction<Marker, T>,
-        T: Sync + Send + 'static,
-    {
-        let (sender, receiver) = sync_once_channel();
-        let id = self
-            .scope
-            .build_coroutine(
-                Some(self.id),
-                false,
-                Some(self.scope.id),
-                Some(sender),
-                coroutine,
-            )
-            .unwrap();
-        CoroHandle::Waiting { id, receiver }
-    }
-
-    pub fn add(&mut self, command: impl EntityCommand) -> &mut Self {
-        self.scope.commands().entity(self.id).add(command);
-        self
-    }
-
-    pub fn insert(&mut self, bundle: impl Bundle) -> &mut Self {
-        self.scope.commands().add(Insert {
-            entity: self.id,
-            bundle,
-        });
-        self
-    }
-}
+//pub struct DeferredOps<'a> {
+//    scope: &'a mut Scope,
+//}
+//
+//impl<'a> DeferredOps<'a> {
+//    pub fn new(scope: &'a mut Scope) -> Self {
+//        Self { scope }
+//    }
+//
+//    pub fn commands(&'a mut self, f: impl FnOnce(Commands<'a, 'a>)) {
+//        f(self.scope.commands())
+//    }
+//
+//    pub fn bind_coroutine<Marker: 'static, T, C>(
+//        &'a mut self,
+//        to: Entity,
+//        coroutine: C,
+//    ) -> CoroHandle<T>
+//    where
+//        C: CoroutineParamFunction<Marker, T>,
+//        T: Sync + Send + 'static,
+//    {
+//        let (sender, receiver) = sync_once_channel();
+//        let id = self
+//            .scope
+//            .build_coroutine(
+//                Some(to),
+//                false,
+//                Some(self.scope.id),
+//                Some(sender),
+//                coroutine,
+//            )
+//            .unwrap();
+//        CoroHandle::Waiting { id, receiver }
+//    }
+//
+//    pub fn spawn_local(&mut self) -> DefferedLocal<'_> {
+//        todo!()
+//    }
+//}
+//
+//pub struct DefferedLocal<'a> {
+//    id: Entity,
+//    scope: &'a Scope,
+//}
+//
+//impl<'a> DefferedLocal<'a> {
+//    pub fn id(self) -> Entity {
+//        self.id
+//    }
+//
+//    pub fn bind_coroutine<Marker: 'static, T, C>(self, coroutine: C) -> CoroHandle<T>
+//    where
+//        C: CoroutineParamFunction<Marker, T>,
+//        T: Sync + Send + 'static,
+//    {
+//        let (sender, receiver) = sync_once_channel();
+//        let id = self
+//            .scope
+//            .build_coroutine(
+//                Some(self.id),
+//                false,
+//                Some(self.scope.id),
+//                Some(sender),
+//                coroutine,
+//            )
+//            .unwrap();
+//        CoroHandle::Waiting { id, receiver }
+//    }
+//
+//    pub fn add(&mut self, command: impl EntityCommand) -> &mut Self {
+//        self.scope.commands().entity(self.id).add(command);
+//        self
+//    }
+//
+//    pub fn insert(&mut self, bundle: impl Bundle) -> &mut Self {
+//        self.scope.commands().add(Insert {
+//            entity: self.id,
+//            bundle,
+//        });
+//        self
+//    }
+//}

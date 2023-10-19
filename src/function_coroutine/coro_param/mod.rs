@@ -1,4 +1,9 @@
-use bevy::{ecs::world::unsafe_world_cell::UnsafeWorldCell, utils::all_tuples};
+use bevy::{
+    ecs::{system::CommandQueue, world::unsafe_world_cell::UnsafeWorldCell},
+    utils::all_tuples,
+};
+
+use crate::executor::msg::EmitMsg;
 
 use super::CoroMeta;
 

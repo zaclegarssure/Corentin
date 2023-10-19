@@ -1,5 +1,9 @@
 use bevy::{ecs::system::CommandQueue, prelude::Entity, time::Time, utils::synccell::SyncCell};
-use std::{collections::VecDeque, ops::Index};
+use std::{
+    collections::VecDeque,
+    ops::Index,
+    sync::mpsc::{Receiver, Sender, channel},
+};
 
 use bevy::{
     prelude::{Resource, World},
@@ -8,21 +12,19 @@ use bevy::{
 };
 use tinyset::{SetU64, SetUsize};
 
+use crate::function_coroutine::ResumeParam;
+
 use self::msg::{CoroStatus, EmitMsg, NewCoroutine, SignalId};
 
 use super::{
-    function_coroutine::{
-        resume::Resume,
-        scope::{ResumeParam, Scope},
-        CoroutineParamFunction, FunctionCoroutine,
-    },
+    function_coroutine::{resume::Resume, scope::Scope, CoroutineParamFunction, FunctionCoroutine},
     id_alloc::{Id, Ids},
     Coroutine, HeapCoro,
 };
 
 pub mod msg;
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct Executor {
     ids: Ids,
     coroutines: HashMap<Id, HeapCoro>,
@@ -33,6 +35,26 @@ pub struct Executor {
     waiting_on_signal: HashMap<SignalId, SetU64>,
     scope_ownership: HashMap<Id, SetU64>,
     is_awaited_by: HashMap<Id, Id>,
+    new_coro_channel: (Sender<NewCoroutine>, Receiver<NewCoroutine>),
+    signal_channel: (Sender<EmitMsg>, Receiver<EmitMsg>),
+}
+
+impl Default for Executor {
+    fn default() -> Self {
+        Self {
+            ids: Default::default(),
+            coroutines: Default::default(),
+            waiting_on_tick: Default::default(),
+            waiting_on_time: Default::default(),
+            waiting_on_all: Default::default(),
+            waiting_on_first: Default::default(),
+            waiting_on_signal: Default::default(),
+            scope_ownership: Default::default(),
+            is_awaited_by: Default::default(),
+            new_coro_channel: channel(),
+            signal_channel: channel(),
+        }
+    }
 }
 
 // SAFETY: The [`Executor`] can only be accessed througth an exclusive
@@ -107,10 +129,6 @@ impl Executor {
             .map(|c_id| (c_id, parents.add_root(c_id)))
             .collect();
 
-        let mut new_coro = Vec::new();
-        let mut emit_signal = Vec::new();
-        let mut command_queue = CommandQueue::default();
-
         while let Some((coro_id, node)) = ready_coro.pop_front() {
             self.resume(
                 coro_id,
@@ -118,15 +136,12 @@ impl Executor {
                 &mut ready_coro,
                 &mut parents,
                 &mut signals,
-                &mut new_coro,
-                &mut emit_signal,
-                &mut command_queue,
                 world,
             );
         }
 
         self.ids.flush();
-        command_queue.apply(world);
+        //command_queue.apply(world);
     }
 
     /// Run a specific coroutine and it's children.
@@ -138,9 +153,6 @@ impl Executor {
         ready_coro: &mut VecDeque<(Id, usize)>,
         parents: &mut ParentTable,
         signal_table: &mut HashMap<SignalId, usize>,
-        new_coro: &mut Vec<NewCoroutine>,
-        emit_signal: &mut Vec<EmitMsg>,
-        command_queue: &mut CommandQueue,
         world: &mut World,
     ) {
         if !self.ids.contains(coro_id) {
@@ -154,15 +166,7 @@ impl Executor {
             return;
         }
 
-        let status = Coroutine::resume(
-            coro.as_mut(),
-            world,
-            &self.ids,
-            coro_node,
-            new_coro,
-            emit_signal,
-            command_queue,
-        );
+        let status = Coroutine::resume(coro.as_mut(), world, &self.ids, coro_node);
 
         // TODO Signals
 
@@ -172,7 +176,7 @@ impl Executor {
             coroutine,
             is_owned_by,
             should_start_now,
-        } in new_coro.drain(..)
+        } in self.new_coro_channel.1.try_iter()
         {
             self.coroutines.insert(id, coroutine);
 
@@ -189,7 +193,7 @@ impl Executor {
             }
         }
 
-        for EmitMsg { id, by } in emit_signal.drain(..) {
+        for EmitMsg { id, by } in self.signal_channel.1.try_iter() {
             signal_table.insert(id, by);
             if let Some(children) = self.waiting_on_signal.remove(&id) {
                 for c in children {
@@ -297,7 +301,13 @@ impl Executor {
 
         let id = self.ids.allocate_id();
 
-        let new_scope = Scope::new(id, owner, resume_param.get_raw());
+        let new_scope = Scope::new(
+            id,
+            owner,
+            resume_param.get_raw(),
+            self.new_coro_channel.0.clone(),
+            self.signal_channel.0.clone(),
+        );
 
         if let Some(c) = FunctionCoroutine::new(
             new_scope,

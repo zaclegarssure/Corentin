@@ -14,17 +14,15 @@ use std::task::Poll;
 
 use pin_project::pin_project;
 
+use self::coro_param::CoroParam;
 use self::once_channel::OnceSender;
 use self::resume::Resume;
 use self::scope::Scope;
 
-use super::coro_param::CoroParam;
 use super::CoroAccess;
 use super::CoroMeta;
 
 use super::executor::msg::CoroStatus;
-use super::executor::msg::EmitMsg;
-use super::executor::msg::NewCoroutine;
 
 use super::id_alloc::Id;
 use super::id_alloc::Ids;
@@ -47,6 +45,9 @@ pub mod prelude {
 
     #[doc(hidden)]
     pub use super::handle::CoroHandle;
+
+    #[doc(hidden)]
+    pub use super::coro_param::prelude::*;
 }
 
 #[pin_project]
@@ -89,9 +90,6 @@ where
         world: &mut World,
         ids: &Ids,
         curr_node: usize,
-        next_coro_channel: &mut Vec<NewCoroutine>,
-        emit_signal: &mut Vec<EmitMsg>,
-        commands: &mut CommandQueue,
     ) -> CoroStatus {
         let waker = waker::create();
         // Dummy context
@@ -100,9 +98,6 @@ where
         let this = self.project();
 
         let world = world as *mut _;
-        let new_coro_sender = next_coro_channel as *mut _;
-        let emit_sender = emit_signal as *mut _;
-        let commands = commands as *mut _;
         let ids = ids as *const _;
 
         // Safety: The only unsafe operations are swapping the resume arguments back and forth
@@ -114,9 +109,6 @@ where
                 ids,
                 curr_node,
                 yield_sender: None,
-                new_coro_sender,
-                emit_sender,
-                commands,
             });
 
             let res = this.future.poll(&mut cx);
@@ -237,14 +229,11 @@ enum CoroState {
     Running,
 }
 
-struct ResumeParam {
+pub(crate) struct ResumeParam {
     world: *mut World,
     ids: *const Ids,
     curr_node: usize,
     yield_sender: Option<CoroStatus>,
-    new_coro_sender: *mut Vec<NewCoroutine>,
-    emit_sender: *mut Vec<EmitMsg>,
-    commands: *mut CommandQueue,
 }
 
 impl Default for ResumeParam {
@@ -264,45 +253,6 @@ impl ResumeParam {
             ids: null(),
             curr_node: 0,
             yield_sender: None,
-            new_coro_sender: null_mut(),
-            emit_sender: null_mut(),
-            commands: null_mut(),
         }
     }
-
-    //pub fn reset(&mut self) {
-    //    *self = Self::new();
-    //}
-
-    //pub fn world_raw(&self) -> *mut World {
-    //    self.world
-    //}
-
-    //pub fn alloc_id(&self) -> Id {
-    //    // Safety: See general comment.
-    //    unsafe { self.ids.as_ref() }.unwrap().allocate_id()
-    //}
-
-    //pub fn send_yield(&mut self, msg: CoroStatus) {
-    //    self.yield_sender = Some(msg);
-    //}
-
-    //pub fn send_new_coro(&mut self, new_coro: NewCoroutine) {
-    //    unsafe {
-    //        self.new_coro_sender.as_mut().unwrap().push(new_coro);
-    //    }
-    //}
-
-    //pub fn emit_signal(&mut self, id: SignalId) {
-    //    unsafe {
-    //        self.emit_sender.as_mut().unwrap().push(EmitMsg {
-    //            id,
-    //            by: self.curr_node,
-    //        })
-    //    }
-    //}
-
-    //pub fn curr_node(&self) -> usize {
-    //    self.curr_node
-    //}
 }
