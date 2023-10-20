@@ -7,6 +7,7 @@ use bevy::prelude::Entity;
 use bevy::prelude::World;
 use bevy::utils::synccell::SyncCell;
 use bevy::utils::HashMap;
+use executor::msg::CoroStatus;
 use executor::msg::YieldMsg;
 use global_channel::Channel;
 use global_channel::CommandChannel;
@@ -52,27 +53,16 @@ pub trait Coroutine: Send + 'static {
         emit_channel: &Channel<EmitMsg>,
         new_coro_channel: &Channel<NewCoroutine>,
         commands_channel: &CommandChannel,
-        yield_channel: &Channel<YieldMsg>,
-    ) {
-        // Safety: We have exclusive access to the `world`.
-        unsafe {
-            self.resume_unsafe(
-                world.as_unsafe_world_cell(),
-                ids,
-                curr_node,
-                emit_channel,
-                new_coro_channel,
-                commands_channel,
-                yield_channel,
-            );
-        }
-    }
+    ) -> CoroStatus;
 
     /// Resume this coroutine, but with an [`UnsafeWorldCell`] to access the [`World`].
+    /// Compared to [`Coroutine::resume`], here the status is communicated via
+    /// a channel instead.
     ///
     /// # Safety
     /// The caller is responsible for ensuring that not conflicting access
     /// to the world can take place.
+    #[allow(clippy::too_many_arguments)]
     unsafe fn resume_unsafe(
         self: Pin<&mut Self>,
         world: UnsafeWorldCell<'_>,
@@ -242,7 +232,14 @@ mod test {
         world.resource_scope(|w, mut executor: Mut<Executor>| {
             for i in 0..5 {
                 executor.tick(w);
-                assert_eq!(*a.lock().unwrap(), i);
+                if i == 4 {
+                    let val = *a.lock().unwrap();
+                    // On the last tick, it is not defined if the second or first coroutine will
+                    // resume first, meaning the value may or may not be incremented at the end
+                    assert!(val == 4 || val == 3);
+                } else {
+                    assert_eq!(*a.lock().unwrap(), i);
+                }
             }
         });
     }

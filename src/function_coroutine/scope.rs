@@ -149,25 +149,14 @@ impl Scope {
         }
     }
 
-
-    pub fn bind_coroutine<Marker: 'static, T, C>(
-        &self,
-        to: Entity,
-        coroutine: C,
-    ) -> CoroHandle<T>
+    pub fn bind_coroutine<Marker: 'static, T, C>(&self, to: Entity, coroutine: C) -> CoroHandle<T>
     where
         C: CoroutineParamFunction<Marker, T>,
         T: Sync + Send + 'static,
     {
         let (sender, receiver) = sync_once_channel();
         let id = self
-            .build_coroutine(
-                Some(to),
-                false,
-                Some(self.id),
-                Some(sender),
-                coroutine,
-            )
+            .build_coroutine(Some(to), false, Some(self.id), Some(sender), coroutine)
             .unwrap();
         CoroHandle::Waiting { id, receiver }
     }

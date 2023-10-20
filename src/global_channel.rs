@@ -28,11 +28,8 @@ impl<T: Send> Channel<T> {
         unsafe { cell.get().as_mut().unwrap() }.push(value);
     }
 
-    pub fn receive(&mut self) -> Vec<T> {
-        self.chan
-            .iter_mut()
-            .flat_map(|q| q.get_mut().drain(..))
-            .collect()
+    pub fn receive(&mut self) -> impl Iterator<Item = T> + '_ {
+        self.chan.iter_mut().flat_map(|q| q.get_mut().drain(..))
     }
 }
 

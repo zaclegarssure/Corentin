@@ -1,8 +1,4 @@
-use bevy::{
-    prelude::Entity,
-    time::Time,
-    utils::{synccell::SyncCell, HashSet},
-};
+use bevy::{prelude::Entity, time::Time, utils::synccell::SyncCell};
 use std::{collections::VecDeque, ops::Index};
 
 use bevy::{
@@ -32,7 +28,7 @@ pub struct Executor {
     ids: Ids,
     coroutines: HashMap<Id, HeapCoro>,
     waiting_on_tick: VecDeque<Id>,
-    waiting_on_time: VecDeque<(Id, Timer)>,
+    waiting_on_time: HashMap<Id, Timer>,
     waiting_on_all: HashMap<Id, SetU64>,
     waiting_on_first: HashMap<Id, SetU64>,
     waiting_on_signal: HashMap<SignalId, SetU64>,
@@ -96,10 +92,8 @@ impl Executor {
         let delta_time = world.resource::<Time>().delta();
 
         // Tick all coroutines waiting on duration
-        for (_, timer) in &mut self.waiting_on_time {
+        self.waiting_on_time.retain(|coro, timer| {
             timer.tick(delta_time);
-        }
-        self.waiting_on_time.retain(|(coro, timer)| {
             if timer.just_finished() {
                 root_coros.push_back(*coro);
                 false
@@ -111,13 +105,13 @@ impl Executor {
         let mut parents = ParentTable::new();
         let mut signals = HashMap::new();
 
-        let mut ready_coro: VecDeque<(Id, usize)> = root_coros
+        let mut ready_coro: Vec<(Id, usize)> = root_coros
             .into_iter()
             .map(|c_id| (c_id, parents.add_root(c_id)))
             .collect();
 
         while !ready_coro.is_empty() {
-            while let Some((coro_id, node)) = ready_coro.pop_front() {
+            while let Some((coro_id, node)) = ready_coro.pop() {
                 if !self.ids.contains(coro_id) {
                     continue;
                 }
@@ -129,7 +123,7 @@ impl Executor {
                     continue;
                 }
 
-                Coroutine::resume(
+                let status = Coroutine::resume(
                     coro.as_mut(),
                     world,
                     &self.ids,
@@ -137,9 +131,57 @@ impl Executor {
                     &self.signal_channel,
                     &self.new_coro_channel,
                     &self.commands_channel,
-                    &self.yield_channel,
                 );
+
+                // TODO remove copy paste
+                // Note to self: When running on a single thread, it's faster to process each
+                // status immediatly, rather than accumulating them and processing them afterward.
+                // (however for the other queue, it seems to be faster to process them at the end
+                // (based on way too simple stress test))
+                match status {
+                    CoroStatus::Done => {
+                        self.mark_as_done(coro_id, node, &mut ready_coro, &mut parents)
+                    }
+                    CoroStatus::Tick => self.waiting_on_tick.push_back(coro_id),
+                    CoroStatus::Duration(d) => {
+                        self.waiting_on_time.insert(coro_id, d);
+                    }
+                    CoroStatus::First(handlers) => {
+                        self.waiting_on_first.insert(coro_id, handlers.clone());
+
+                        for handler in handlers.iter() {
+                            self.is_awaited_by.insert(Id::from_bits(handler), coro_id);
+                        }
+                    }
+                    CoroStatus::All(handlers) => {
+                        let waits_on = handlers.clone();
+
+                        for handler in handlers.iter() {
+                            self.is_awaited_by.insert(Id::from_bits(handler), coro_id);
+                        }
+
+                        self.waiting_on_all.insert(coro_id, waits_on);
+                    }
+                    CoroStatus::Cancel => {
+                        self.cancel(coro_id);
+                    }
+                    CoroStatus::Signal(signal_id) => {
+                        if let Some(writer) = signals.get(&signal_id) {
+                            if !parents.is_parent(*writer, node) {
+                                let node = parents.add_child(*writer, coro_id);
+                                ready_coro.push((coro_id, node));
+                                continue;
+                            }
+                        }
+
+                        self.waiting_on_signal
+                            .entry(signal_id)
+                            .or_default()
+                            .insert(coro_id.to_bits());
+                    }
+                };
             }
+
             self.process_channels(&mut ready_coro, &mut parents, &mut signals);
         }
 
@@ -152,11 +194,10 @@ impl Executor {
         &mut self,
         coro_id: Id,
         coro_node: usize,
-        ready_coro: &mut VecDeque<(Id, usize)>,
+        ready_coro: &mut Vec<(Id, usize)>,
         parents: &mut ParentTable,
     ) {
         self.coroutines.remove(&coro_id);
-        self.just_done.insert(coro_id.to_bits());
 
         if let Some(owned) = self.scope_ownership.remove(&coro_id) {
             for c in owned {
@@ -175,7 +216,7 @@ impl Executor {
                 }
 
                 let node = parents.add_child(coro_node, parent);
-                ready_coro.push_back((parent, node));
+                ready_coro.push((parent, node));
             }
 
             if let Some(others) = self.waiting_on_all.get_mut(&parent) {
@@ -184,7 +225,7 @@ impl Executor {
                 let node = parents.add_child(coro_node, parent);
 
                 if others.is_empty() {
-                    ready_coro.push_back((parent, node));
+                    ready_coro.push((parent, node));
                     self.waiting_on_all.remove(&parent);
                 }
             }
@@ -220,7 +261,7 @@ impl Executor {
 
     fn process_channels(
         &mut self,
-        ready_coro: &mut VecDeque<(Id, usize)>,
+        ready_coro: &mut Vec<(Id, usize)>,
         parents: &mut ParentTable,
         signal_table: &mut HashMap<SignalId, usize>,
     ) {
@@ -243,44 +284,23 @@ impl Executor {
 
             if should_start_now {
                 let next_node = parents.add_child(ran_after, id);
-                ready_coro.push_back((id, next_node));
+                ready_coro.push((id, next_node));
             }
         }
 
-        let mut just_done: HashMap<u64, usize> = HashMap::new();
+        let mut just_done: Vec<(Id, usize)> = Vec::new();
+        let mut just_canceled: Vec<Id> = Vec::new();
 
         for YieldMsg { id, node, status } in self.yield_channel.receive() {
             match status {
                 CoroStatus::Done => {
-                    just_done.insert(id.to_bits(), node);
-                    self.mark_as_done(id, node, ready_coro, parents);
+                    just_done.push((id, node));
                 }
                 CoroStatus::Tick => self.waiting_on_tick.push_back(id),
-                CoroStatus::Duration(d) => self.waiting_on_time.push_back((id, d)),
-                CoroStatus::First(mut handlers) => {
-                    if handlers
-                        .iter()
-                        .find(|h| {
-                            !just_done.contains_key(h) && !self.ids.contains(Id::from_bits(*h))
-                        })
-                        .is_some()
-                    {
-
-                    }
-                    if let Some(p_id) = handlers.iter().find(|h| just_done.contains_key(h)) {
-                        handlers.remove(p_id);
-                        // coro is the "winner", all the others are cancelled
-                        for o in handlers {
-                            let id = Id::from_bits(o);
-                            self.cancel(id);
-                        }
-
-                        let node =
-                            parents.add_child(*just_done.get(&p_id).unwrap(), Id::from_bits(p_id));
-                        ready_coro.push_back((id, node));
-                        continue;
-                    }
-
+                CoroStatus::Duration(d) => {
+                    self.waiting_on_time.insert(id, d);
+                }
+                CoroStatus::First(handlers) => {
                     self.waiting_on_first.insert(id, handlers.clone());
 
                     for handler in handlers.iter() {
@@ -288,24 +308,23 @@ impl Executor {
                     }
                 }
                 CoroStatus::All(handlers) => {
-                    let mut waits_on = handlers.clone();
+                    let waits_on = handlers.clone();
 
                     for handler in handlers.iter() {
-                        // if let Some()
                         self.is_awaited_by.insert(Id::from_bits(handler), id);
                     }
 
                     self.waiting_on_all.insert(id, waits_on);
                 }
                 CoroStatus::Cancel => {
-                    self.cancel(id);
+                    just_canceled.push(id);
                 }
                 CoroStatus::Signal(signal_id) => {
                     if let Some(writer) = signal_table.get(&signal_id) {
                         if !parents.is_parent(*writer, node) {
                             let node = parents.add_child(*writer, id);
-                            ready_coro.push_back((id, node));
-                            return;
+                            ready_coro.push((id, node));
+                            continue;
                         }
                     }
 
@@ -317,13 +336,21 @@ impl Executor {
             };
         }
 
+        for (id, node) in just_done {
+            self.mark_as_done(id, node, ready_coro, parents);
+        }
+
+        for id in just_canceled {
+            self.cancel(id);
+        }
+
         for EmitMsg { id, by } in self.signal_channel.receive() {
             signal_table.insert(id, by);
             if let Some(children) = self.waiting_on_signal.remove(&id) {
                 for c in children {
                     let id = Id::from_bits(c);
                     let node = parents.add_child(by, id);
-                    ready_coro.push_back((id, node));
+                    ready_coro.push((id, node));
                 }
             }
         }

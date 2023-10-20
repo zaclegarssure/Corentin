@@ -31,19 +31,18 @@ fn setup_scene(mut commands: Commands) {
                     }
                 });
 
-                s.duration(Duration::from_secs(1)).await;
+                s.duration(Duration::from_secs(5)).await;
 
                 loop {
                     let c1 = s.start(wait_on_example);
                     let c2 = s.start(wait_on_example);
                     s.all((c1, c2)).await;
-                    println!("BETET");
                 }
             }));
     }
 }
 
 async fn wait_on_example(mut s: Scope, on_change: OnChange<Example>) {
+    //s.duration(Duration::from_secs(1)).await;
     on_change.observe(&mut s).await;
-    println!("EFEF");
 }

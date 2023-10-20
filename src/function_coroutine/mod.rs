@@ -90,6 +90,66 @@ where
     T: Send + Sync + 'static,
     F: CoroutineParamFunction<Marker, T>,
 {
+    fn resume(
+        self: Pin<&mut Self>,
+        world: &mut World,
+        ids: &Ids,
+        curr_node: usize,
+        emit_channel: &Channel<EmitMsg>,
+        new_coro_channel: &Channel<NewCoroutine>,
+        commands_channel: &CommandChannel,
+    ) -> CoroStatus {
+        // TODO remove copy paste
+        let waker = waker::create();
+        // Dummy context
+        let mut cx = Context::from_waker(&waker);
+
+        let this = self.project();
+
+        // Safety: Idk
+        let world = world as *mut _;
+        let ids = ids as *const _;
+        let emit_channel = emit_channel as *const _;
+        let new_coro_channel = new_coro_channel as *const _;
+        let commands_channel = commands_channel as *const _;
+
+        // Safety: The only unsafe operations are swapping the resume arguments back and forth
+        // All the pointers are valid since we get them from references, and we are never doing
+        // the swap while the future is getting polled, only before and after.
+        unsafe {
+            this.resume_param.set(ResumeParam {
+                world,
+                ids,
+                curr_node,
+                yield_sender: None,
+                emit_channel,
+                new_coro_channel,
+                commands_channel,
+            });
+
+            let res = this.future.poll(&mut cx);
+
+            match res {
+                Poll::Ready(t) => {
+                    if let Some(sender) = this.result_sender.take() {
+                        sender.send(t);
+                    }
+                    CoroStatus::Done
+                }
+                _ => {
+                    let status = this
+                        .resume_param
+                        .get_mut()
+                        .yield_sender
+                        .take()
+                        .expect(ERR_WRONGAWAIT);
+                    this.resume_param.set(ResumeParam::new());
+                    status
+                }
+            }
+        }
+    }
+
     unsafe fn resume_unsafe(
         self: Pin<&mut Self>,
         world: UnsafeWorldCell<'_>,
