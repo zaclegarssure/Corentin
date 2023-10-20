@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use bevy::{
     diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     prelude::*,
@@ -25,14 +27,17 @@ fn setup_scene(mut commands: Commands) {
                 s.start_local(|mut s: Scope, mut ex: Wr<Example>| async move {
                     loop {
                         s.next_tick().await;
-                        ex.get_mut(&mut s).0 += 1;
+                        ex.get_mut(&s).0 += 1;
                     }
                 });
+
+                s.duration(Duration::from_secs(1)).await;
 
                 loop {
                     let c1 = s.start(wait_on_example);
                     let c2 = s.start(wait_on_example);
                     s.all((c1, c2)).await;
+                    println!("BETET");
                 }
             }));
     }
@@ -40,4 +45,5 @@ fn setup_scene(mut commands: Commands) {
 
 async fn wait_on_example(mut s: Scope, on_change: OnChange<Example>) {
     on_change.observe(&mut s).await;
+    println!("EFEF");
 }

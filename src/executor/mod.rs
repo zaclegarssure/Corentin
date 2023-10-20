@@ -1,4 +1,8 @@
-use bevy::{prelude::Entity, time::Time, utils::synccell::SyncCell};
+use bevy::{
+    prelude::Entity,
+    time::Time,
+    utils::{synccell::SyncCell, HashSet},
+};
 use std::{collections::VecDeque, ops::Index};
 
 use bevy::{
@@ -114,31 +118,28 @@ impl Executor {
 
         while !ready_coro.is_empty() {
             while let Some((coro_id, node)) = ready_coro.pop_front() {
-                {
-                    if !self.ids.contains(coro_id) {
-                        continue;
-                    }
+                if !self.ids.contains(coro_id) {
+                    continue;
+                }
 
-                    let coro = self.coroutines.get_mut(&coro_id).unwrap().get();
+                let coro = self.coroutines.get_mut(&coro_id).unwrap().get();
 
-                    if !coro.is_valid(world) {
-                        self.cancel(coro_id);
-                        continue;
-                    }
+                if !coro.is_valid(world) {
+                    self.cancel(coro_id);
+                    continue;
+                }
 
-                    Coroutine::resume(
-                        coro.as_mut(),
-                        world,
-                        &self.ids,
-                        node,
-                        &self.signal_channel,
-                        &self.new_coro_channel,
-                        &self.commands_channel,
-                        &self.yield_channel,
-                    );
-                };
+                Coroutine::resume(
+                    coro.as_mut(),
+                    world,
+                    &self.ids,
+                    node,
+                    &self.signal_channel,
+                    &self.new_coro_channel,
+                    &self.commands_channel,
+                    &self.yield_channel,
+                );
             }
-
             self.process_channels(&mut ready_coro, &mut parents, &mut signals);
         }
 
@@ -155,6 +156,7 @@ impl Executor {
         parents: &mut ParentTable,
     ) {
         self.coroutines.remove(&coro_id);
+        self.just_done.insert(coro_id.to_bits());
 
         if let Some(owned) = self.scope_ownership.remove(&coro_id) {
             for c in owned {
@@ -245,35 +247,55 @@ impl Executor {
             }
         }
 
-        for EmitMsg { id, by } in self.signal_channel.receive() {
-            signal_table.insert(id, by);
-            if let Some(children) = self.waiting_on_signal.remove(&id) {
-                for c in children {
-                    let id = Id::from_bits(c);
-                    let node = parents.add_child(by, id);
-                    ready_coro.push_back((id, node));
-                }
-            }
-        }
+        let mut just_done: HashMap<u64, usize> = HashMap::new();
 
         for YieldMsg { id, node, status } in self.yield_channel.receive() {
             match status {
                 CoroStatus::Done => {
+                    just_done.insert(id.to_bits(), node);
                     self.mark_as_done(id, node, ready_coro, parents);
                 }
                 CoroStatus::Tick => self.waiting_on_tick.push_back(id),
                 CoroStatus::Duration(d) => self.waiting_on_time.push_back((id, d)),
-                CoroStatus::First(handlers) => {
+                CoroStatus::First(mut handlers) => {
+                    if handlers
+                        .iter()
+                        .find(|h| {
+                            !just_done.contains_key(h) && !self.ids.contains(Id::from_bits(*h))
+                        })
+                        .is_some()
+                    {
+
+                    }
+                    if let Some(p_id) = handlers.iter().find(|h| just_done.contains_key(h)) {
+                        handlers.remove(p_id);
+                        // coro is the "winner", all the others are cancelled
+                        for o in handlers {
+                            let id = Id::from_bits(o);
+                            self.cancel(id);
+                        }
+
+                        let node =
+                            parents.add_child(*just_done.get(&p_id).unwrap(), Id::from_bits(p_id));
+                        ready_coro.push_back((id, node));
+                        continue;
+                    }
+
                     self.waiting_on_first.insert(id, handlers.clone());
+
                     for handler in handlers.iter() {
                         self.is_awaited_by.insert(Id::from_bits(handler), id);
                     }
                 }
                 CoroStatus::All(handlers) => {
-                    self.waiting_on_all.insert(id, handlers.clone());
+                    let mut waits_on = handlers.clone();
+
                     for handler in handlers.iter() {
+                        // if let Some()
                         self.is_awaited_by.insert(Id::from_bits(handler), id);
                     }
+
+                    self.waiting_on_all.insert(id, waits_on);
                 }
                 CoroStatus::Cancel => {
                     self.cancel(id);
@@ -293,6 +315,17 @@ impl Executor {
                         .insert(id.to_bits());
                 }
             };
+        }
+
+        for EmitMsg { id, by } in self.signal_channel.receive() {
+            signal_table.insert(id, by);
+            if let Some(children) = self.waiting_on_signal.remove(&id) {
+                for c in children {
+                    let id = Id::from_bits(c);
+                    let node = parents.add_child(by, id);
+                    ready_coro.push_back((id, node));
+                }
+            }
         }
     }
 }

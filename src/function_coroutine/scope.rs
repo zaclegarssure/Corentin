@@ -137,7 +137,7 @@ impl Scope {
         self.owner
     }
 
-    pub fn commands(&mut self) -> Commands<'_, '_> {
+    pub fn commands(&self) -> Commands<'_, '_> {
         unsafe {
             let entities = self.world_cell().entities();
             self.resume_param
@@ -149,15 +149,28 @@ impl Scope {
         }
     }
 
-    //pub fn deferred(&mut self) -> DeferredOps<'_> {
-    //    DeferredOps::new(self)
-    //}
 
-    //pub fn commands(&mut self) -> Commands<'_, '_> {
-    //    let queue = unsafe { self.resume_param.as_mut().commands.as_mut().unwrap() };
-    //    let entities = unsafe { self.resume_param.as_mut().world_cell().entities() };
-    //    Commands::new_from_entities(queue, entities)
-    //}
+    pub fn bind_coroutine<Marker: 'static, T, C>(
+        &self,
+        to: Entity,
+        coroutine: C,
+    ) -> CoroHandle<T>
+    where
+        C: CoroutineParamFunction<Marker, T>,
+        T: Sync + Send + 'static,
+    {
+        let (sender, receiver) = sync_once_channel();
+        let id = self
+            .build_coroutine(
+                Some(to),
+                false,
+                Some(self.id),
+                Some(sender),
+                coroutine,
+            )
+            .unwrap();
+        CoroHandle::Waiting { id, receiver }
+    }
 
     pub(crate) fn world_cell(&self) -> UnsafeWorldCell<'_> {
         unsafe {
@@ -285,28 +298,6 @@ unsafe impl Send for Scope {}
 //        self
 //    }
 //
-//    pub fn bind_coroutine<Marker: 'static, T, C>(
-//        &'a mut self,
-//        to: Entity,
-//        coroutine: C,
-//    ) -> CoroHandle<T>
-//    where
-//        C: CoroutineParamFunction<Marker, T>,
-//        T: Sync + Send + 'static,
-//    {
-//        let (sender, receiver) = sync_once_channel();
-//        let id = self
-//            .scope
-//            .build_coroutine(
-//                Some(to),
-//                false,
-//                Some(self.scope.id),
-//                Some(sender),
-//                coroutine,
-//            )
-//            .unwrap();
-//        CoroHandle::Waiting { id, receiver }
-//    }
 //
 //    //pub fn spawn_local(&mut self) -> DefferedLocal<'_> {
 //    //    todo!()
