@@ -6,24 +6,28 @@ use std::future::Future;
 
 use std::pin::Pin;
 
+use std::ptr::null;
+use std::ptr::null_mut;
 use std::task::Context;
 use std::task::Poll;
 
 use pin_project::pin_project;
 
+use crate::executor::msg::EmitMsg;
+use crate::executor::msg::NewCoroutine;
+use crate::executor::msg::YieldMsg;
+use crate::global_channel::Channel;
+use crate::global_channel::CommandChannel;
+
+use self::coro_param::CoroParam;
 use self::once_channel::OnceSender;
 use self::resume::Resume;
-use self::scope::ResumeParam;
 use self::scope::Scope;
 
-use super::coro_param::CoroParam;
 use super::CoroAccess;
 use super::CoroMeta;
 
-use super::executor::global_channel::SyncSender;
 use super::executor::msg::CoroStatus;
-use super::executor::msg::EmitMsg;
-use super::executor::msg::NewCoroutine;
 
 use super::id_alloc::Id;
 use super::id_alloc::Ids;
@@ -34,6 +38,7 @@ pub mod await_change;
 pub mod await_first;
 pub mod await_signal;
 pub mod await_time;
+pub mod coro_param;
 pub mod handle;
 pub mod once_channel;
 pub mod resume;
@@ -45,6 +50,9 @@ pub mod prelude {
 
     #[doc(hidden)]
     pub use super::handle::CoroHandle;
+
+    #[doc(hidden)]
+    pub use super::coro_param::prelude::*;
 }
 
 #[pin_project]
@@ -87,17 +95,23 @@ where
         world: &mut World,
         ids: &Ids,
         curr_node: usize,
-        next_coro_channel: SyncSender<NewCoroutine>,
-        emit_signal: SyncSender<EmitMsg>,
+        emit_channel: &Channel<EmitMsg>,
+        new_coro_channel: &Channel<NewCoroutine>,
+        commands_channel: &CommandChannel,
     ) -> CoroStatus {
+        // TODO remove copy paste
         let waker = waker::create();
         // Dummy context
         let mut cx = Context::from_waker(&waker);
 
         let this = self.project();
 
+        // Safety: Idk
         let world = world as *mut _;
         let ids = ids as *const _;
+        let emit_channel = emit_channel as *const _;
+        let new_coro_channel = new_coro_channel as *const _;
+        let commands_channel = commands_channel as *const _;
 
         // Safety: The only unsafe operations are swapping the resume arguments back and forth
         // All the pointers are valid since we get them from references, and we are never doing
@@ -108,8 +122,9 @@ where
                 ids,
                 curr_node,
                 yield_sender: None,
-                new_coro_sender: Some(next_coro_channel),
-                emit_sender: Some(emit_signal),
+                emit_channel,
+                new_coro_channel,
+                commands_channel,
             });
 
             let res = this.future.poll(&mut cx);
@@ -122,14 +137,82 @@ where
                     CoroStatus::Done
                 }
                 _ => {
-                    let yield_ = this
+                    let status = this
                         .resume_param
                         .get_mut()
                         .yield_sender
                         .take()
                         .expect(ERR_WRONGAWAIT);
                     this.resume_param.set(ResumeParam::new());
-                    yield_
+                    status
+                }
+            }
+        }
+    }
+
+    unsafe fn resume_unsafe(
+        self: Pin<&mut Self>,
+        world: UnsafeWorldCell<'_>,
+        ids: &Ids,
+        curr_node: usize,
+        emit_channel: &Channel<EmitMsg>,
+        new_coro_channel: &Channel<NewCoroutine>,
+        commands_channel: &CommandChannel,
+        yield_channel: &Channel<YieldMsg>,
+    ) {
+        let waker = waker::create();
+        // Dummy context
+        let mut cx = Context::from_waker(&waker);
+
+        let this = self.project();
+
+        // Safety: Idk
+        let world = world.world_mut() as *mut _;
+        let ids = ids as *const _;
+        let emit_channel = emit_channel as *const _;
+        let new_coro_channel = new_coro_channel as *const _;
+        let commands_channel = commands_channel as *const _;
+
+        // Safety: The only unsafe operations are swapping the resume arguments back and forth
+        // All the pointers are valid since we get them from references, and we are never doing
+        // the swap while the future is getting polled, only before and after.
+        unsafe {
+            this.resume_param.set(ResumeParam {
+                world,
+                ids,
+                curr_node,
+                yield_sender: None,
+                emit_channel,
+                new_coro_channel,
+                commands_channel,
+            });
+
+            let res = this.future.poll(&mut cx);
+
+            match res {
+                Poll::Ready(t) => {
+                    if let Some(sender) = this.result_sender.take() {
+                        sender.send(t);
+                    }
+                    yield_channel.send(YieldMsg {
+                        id: *this.id,
+                        node: curr_node,
+                        status: CoroStatus::Done,
+                    });
+                }
+                _ => {
+                    let status = this
+                        .resume_param
+                        .get_mut()
+                        .yield_sender
+                        .take()
+                        .expect(ERR_WRONGAWAIT);
+                    this.resume_param.set(ResumeParam::new());
+                    yield_channel.send(YieldMsg {
+                        id: *this.id,
+                        node: curr_node,
+                        status,
+                    });
                 }
             }
         }
@@ -208,9 +291,6 @@ macro_rules! impl_coro_function {
             Fut: Future<Output = T> + Send + 'static,
             T: Send + Sync + 'static,
         {
-
-
-
             type Future = Fut;
             type Params = ($($param),*);
 
@@ -228,4 +308,38 @@ all_tuples!(impl_coro_function, 0, 16, P);
 enum CoroState {
     Halted,
     Running,
+}
+
+pub(crate) struct ResumeParam {
+    world: *mut World,
+    ids: *const Ids,
+    curr_node: usize,
+    yield_sender: Option<CoroStatus>,
+    emit_channel: *const Channel<EmitMsg>,
+    new_coro_channel: *const Channel<NewCoroutine>,
+    commands_channel: *const CommandChannel,
+}
+
+impl Default for ResumeParam {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// General safety comment: I don't exaclty know if all that is safe...
+/// but normally [`ResumeParam`] can only be accessed via the scope
+/// when the future is polled. Meaning that all the pointers
+/// are valid, and the values are currently owned by the `ResumeParam`.
+impl ResumeParam {
+    pub fn new() -> Self {
+        Self {
+            world: null_mut(),
+            ids: null(),
+            curr_node: 0,
+            yield_sender: None,
+            emit_channel: null(),
+            new_coro_channel: null(),
+            commands_channel: null(),
+        }
+    }
 }

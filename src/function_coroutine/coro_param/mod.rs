@@ -4,7 +4,6 @@ use super::CoroMeta;
 
 pub mod component;
 pub mod on_change;
-pub mod signals;
 
 pub mod prelude {
     #[doc(hidden)]
@@ -30,6 +29,7 @@ macro_rules! impl_coro_param {
     ($($param: ident),*) => {
         #[allow(non_snake_case, unused_parens, unused_variables)]
         impl<$($param: CoroParam),*> CoroParam for ($($param,)*) {
+
             fn init(world: UnsafeWorldCell<'_>, meta: &mut CoroMeta) -> Option<Self> {
                 $(let $param = $param::init(world, meta)?;)*
 

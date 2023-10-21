@@ -1,32 +1,33 @@
 use std::pin::Pin;
 
 use bevy::ecs::component::ComponentId;
+
+use bevy::ecs::world::unsafe_world_cell::UnsafeWorldCell;
 use bevy::prelude::Entity;
 use bevy::prelude::World;
 use bevy::utils::synccell::SyncCell;
 use bevy::utils::HashMap;
+use executor::msg::CoroStatus;
+use executor::msg::YieldMsg;
+use global_channel::Channel;
+use global_channel::CommandChannel;
 use tinyset::SetUsize;
 
-use self::executor::global_channel::SyncSender;
-use self::executor::msg::CoroStatus;
 use self::executor::msg::EmitMsg;
 use self::executor::msg::NewCoroutine;
 
 use self::id_alloc::Ids;
 
 pub mod commands;
-pub mod coro_param;
 pub mod executor;
 pub mod function_coroutine;
+pub mod global_channel;
 pub mod id_alloc;
 pub mod plugin;
 
 pub mod prelude {
     #[doc(hidden)]
     pub use crate::function_coroutine::prelude::*;
-
-    #[doc(hidden)]
-    pub use crate::coro_param::prelude::*;
 
     #[doc(hidden)]
     pub use crate::commands::*;
@@ -37,7 +38,6 @@ pub mod prelude {
 
 // THINGS MISSING:
 // Dropping a scope should drop the local entities
-// Commands
 // SIGNALS !!!
 
 /// A coroutine is a form of state machine. It can get resumed, and returns on which condition it
@@ -50,9 +50,29 @@ pub trait Coroutine: Send + 'static {
         world: &mut World,
         ids: &Ids,
         curr_node: usize,
-        next_coro_channel: SyncSender<NewCoroutine>,
-        emit_signal: SyncSender<EmitMsg>,
+        emit_channel: &Channel<EmitMsg>,
+        new_coro_channel: &Channel<NewCoroutine>,
+        commands_channel: &CommandChannel,
     ) -> CoroStatus;
+
+    /// Resume this coroutine, but with an [`UnsafeWorldCell`] to access the [`World`].
+    /// Compared to [`Coroutine::resume`], here the status is communicated via
+    /// a channel instead.
+    ///
+    /// # Safety
+    /// The caller is responsible for ensuring that not conflicting access
+    /// to the world can take place.
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn resume_unsafe(
+        self: Pin<&mut Self>,
+        world: UnsafeWorldCell<'_>,
+        ids: &Ids,
+        curr_node: usize,
+        emit_channel: &Channel<EmitMsg>,
+        new_coro_channel: &Channel<NewCoroutine>,
+        commands_channel: &CommandChannel,
+        yield_channel: &Channel<YieldMsg>,
+    );
 
     /// Return true, if this coroutine is still valid. If it is not, it should be despawned.
     /// Should be called before [`resume`], to avoid any panic.
@@ -122,20 +142,13 @@ mod test {
 
     use bevy::{
         ecs::system::{Command, EntityCommand},
-        prelude::{Component, Mut},
+        prelude::{Component, Mut, World},
         time::Time,
     };
 
-    use super::{
-        commands::{coroutine, root_coroutine},
-        coro_param::{
-            component::Wr,
-            on_change::{ChangeTracker, OnChange},
-        },
-        executor::Executor,
-        function_coroutine::scope::Scope,
-        *,
-    };
+    use super::prelude::*;
+
+    use super::executor::Executor;
 
     #[derive(Component)]
     struct ExampleComponent(u32);
@@ -219,7 +232,14 @@ mod test {
         world.resource_scope(|w, mut executor: Mut<Executor>| {
             for i in 0..5 {
                 executor.tick(w);
-                assert_eq!(*a.lock().unwrap(), i);
+                if i == 4 {
+                    let val = *a.lock().unwrap();
+                    // On the last tick, it is not defined if the second or first coroutine will
+                    // resume first, meaning the value may or may not be incremented at the end
+                    assert!(val == 4 || val == 3);
+                } else {
+                    assert_eq!(*a.lock().unwrap(), i);
+                }
             }
         });
     }
@@ -362,6 +382,29 @@ mod test {
                 executor.tick(w);
                 assert_eq!(*a.lock().unwrap(), i);
             }
+        });
+    }
+
+    #[test]
+    fn applying_commands_from_coroutine() {
+        let mut world = World::new();
+        world.init_resource::<Executor>();
+        world.insert_resource(Time::new(Instant::now()));
+
+        root_coroutine(|mut s: Scope| async move {
+            let e = s.commands().spawn(ExampleComponent(0)).id();
+            s.next_tick().await;
+            s.commands().entity(e).remove::<ExampleComponent>();
+        })
+        .apply(&mut world);
+
+        world.resource_scope(|world, mut executor: Mut<Executor>| {
+            let mut state = world.query::<&ExampleComponent>();
+            assert_eq!(state.iter(world).len(), 0);
+            executor.tick(world);
+            assert_eq!(state.iter(world).len(), 1);
+            executor.tick(world);
+            assert_eq!(state.iter(world).len(), 0);
         });
     }
 }
