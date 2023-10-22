@@ -1,4 +1,4 @@
-use std::{ptr::NonNull, time::Duration};
+use std::time::Duration;
 
 use bevy::{
     ecs::world::unsafe_world_cell::UnsafeWorldCell,
@@ -27,11 +27,11 @@ use super::{
 pub struct Scope {
     id: Id,
     owner: Option<Entity>,
-    resume_param: NonNull<ResumeParam>,
+    resume_param: Resume<ResumeParam>,
 }
 
 impl Scope {
-    pub(crate) fn new(id: Id, owner: Option<Entity>, resume_param: NonNull<ResumeParam>) -> Self {
+    pub(crate) fn new(id: Id, owner: Option<Entity>, resume_param: Resume<ResumeParam>) -> Self {
         Self {
             id,
             owner,
@@ -141,7 +141,7 @@ impl Scope {
         unsafe {
             let entities = self.world_cell().entities();
             self.resume_param
-                .as_ref()
+                .get()
                 .commands_channel
                 .as_ref()
                 .unwrap()
@@ -164,7 +164,7 @@ impl Scope {
     pub(crate) fn world_cell(&self) -> UnsafeWorldCell<'_> {
         unsafe {
             self.resume_param
-                .as_ref()
+                .get()
                 .world
                 .as_mut()
                 .unwrap()
@@ -176,8 +176,8 @@ impl Scope {
     pub(crate) fn emit_signal(&self, id: SignalId) {
         // Safety: None, fuck it
         unsafe {
-            let by = self.resume_param.as_ref().curr_node;
-            let sender = self.resume_param.as_ref().emit_channel.as_ref().unwrap();
+            let by = self.resume_param.get().curr_node;
+            let sender = self.resume_param.get().emit_channel.as_ref().unwrap();
             sender.send(EmitMsg { id, by });
         };
     }
@@ -186,7 +186,7 @@ impl Scope {
     pub(crate) fn yield_(&mut self, status: CoroStatus) {
         // Safety: When polled, the scope owns CoroParam which own each parameter
         unsafe {
-            self.resume_param.as_mut().yield_sender = Some(status);
+            self.resume_param.get_mut().yield_sender = Some(status);
         }
     }
 
@@ -194,7 +194,7 @@ impl Scope {
     fn send_new_coro(&self, new_coro: NewCoroutine) {
         unsafe {
             self.resume_param
-                .as_ref()
+                .get()
                 .new_coro_channel
                 .as_ref()
                 .unwrap()
@@ -204,14 +204,11 @@ impl Scope {
 
     /// Allocate a new unique coroutine id
     fn alloc_id(&self) -> Id {
-        unsafe {
-            self.resume_param
-                .as_ref()
-                .ids
-                .as_ref()
-                .unwrap()
-                .allocate_id()
-        }
+        unsafe { self.resume_param.get().ids.as_ref().unwrap().allocate_id() }
+    }
+
+    pub(crate) fn check_ownership(&self, other_id: Id) {
+        debug_assert_eq!(self.id, other_id);
     }
 
     /// Build a new coroutine with various parameter
@@ -231,7 +228,7 @@ impl Scope {
         let new_scope = Self {
             id: self.alloc_id(),
             owner,
-            resume_param: resume_param.get_raw(),
+            resume_param: resume_param.clone(),
         };
 
         let new_id = new_scope.id;
@@ -257,7 +254,7 @@ impl Scope {
     }
 
     fn curr_node(&self) -> usize {
-        unsafe { self.resume_param.as_ref().curr_node }
+        unsafe { self.resume_param.get().curr_node }
     }
 }
 

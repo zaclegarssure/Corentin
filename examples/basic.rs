@@ -29,12 +29,12 @@ fn setup_scene(
             |mut s: Scope, mut transform: Wr<Transform>| async move {
                 loop {
                     let dt = s.next_tick().await;
-                    transform.get_mut(&mut s).translation.x += 100.0 * dt.as_secs_f32();
+                    transform.get_mut(&s).translation.x += 100.0 * dt.as_secs_f32();
                 }
             },
         ))
         .add(coroutine(
-            |mut s: Scope, mut transform: Rd<Transform>| async move {
+            |mut s: Scope, transform: Rd<Transform>| async move {
                 let mut i = 0;
                 let original_x = transform.get(&s).translation.x;
                 loop {

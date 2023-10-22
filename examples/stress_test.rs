@@ -43,6 +43,5 @@ fn setup_scene(mut commands: Commands) {
 }
 
 async fn wait_on_example(mut s: Scope, on_change: OnChange<Example>) {
-    //s.duration(Duration::from_secs(1)).await;
     on_change.observe(&mut s).await;
 }

@@ -245,7 +245,7 @@ impl Executor {
 
         let id = self.ids.allocate_id();
 
-        let new_scope = Scope::new(id, owner, resume_param.get_raw());
+        let new_scope = Scope::new(id, owner, resume_param.clone());
 
         if let Some(c) = FunctionCoroutine::new(
             new_scope,
