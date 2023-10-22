@@ -1,11 +1,12 @@
 use std::marker::PhantomData;
 
+use crate::{
+    executor::msg::SignalId, function_coroutine::scope::Scope, id_alloc::Id, CoroMeta, SourceId,
+};
 use bevy::{
     ecs::{component::ComponentId, world::unsafe_world_cell::UnsafeWorldCell},
     prelude::{Component, Entity, Mut},
 };
-
-use crate::{executor::msg::SignalId, function_coroutine::scope::Scope, CoroMeta, SourceId};
 
 use super::{on_change::ChangeTracker, CoroParam};
 
@@ -14,6 +15,7 @@ use super::{on_change::ChangeTracker, CoroParam};
 /// Note that a Coroutine with such parameter will be canceled if the entity does not have the
 /// relevent component (or does not exist).
 pub struct Rd<T: Component> {
+    scope_id: Id,
     owner: Entity,
     _phantom: PhantomData<T>,
 }
@@ -28,6 +30,7 @@ impl<T: Component> CoroParam for Rd<T> {
         }
 
         Some(Self {
+            scope_id: coro_meta.id,
             owner,
             _phantom: PhantomData,
         })
@@ -47,7 +50,8 @@ impl<T: Component> CoroParam for Rd<T> {
 impl<T: Component> Rd<T> {
     /// Return the current value of the [`Component`]. The result ([`InGuard`]) cannot be held
     /// accros any await.
-    pub fn get<'a>(&'a mut self, scope: &'a Scope) -> &'a T {
+    pub fn get<'a>(&'a self, scope: &'a Scope) -> &'a T {
+        scope.check_ownership(self.scope_id);
         unsafe {
             scope
                 .world_cell()
@@ -64,9 +68,10 @@ impl<T: Component> Rd<T> {
 /// Note that a Coroutine with such parameter will be canceled if the entity does not have the
 /// relevent component.
 pub struct Wr<T: Component> {
-    _phantom: PhantomData<T>,
     owner: Entity,
     id: ComponentId,
+    scope_id: Id,
+    _phantom: PhantomData<T>,
 }
 
 impl<T: Component> CoroParam for Wr<T> {
@@ -79,9 +84,10 @@ impl<T: Component> CoroParam for Wr<T> {
         }
 
         Some(Self {
-            _phantom: PhantomData,
             id,
             owner,
+            scope_id: coro_meta.id,
+            _phantom: PhantomData,
         })
     }
 
@@ -98,6 +104,7 @@ impl<T: Component> CoroParam for Wr<T> {
 
 impl<T: Component> Wr<T> {
     pub fn get<'a>(&'a mut self, scope: &'a Scope) -> &'a T {
+        scope.check_ownership(self.scope_id);
         let value = unsafe {
             scope
                 .world_cell()
@@ -111,6 +118,8 @@ impl<T: Component> Wr<T> {
     }
 
     pub fn get_mut<'a>(&'a mut self, scope: &'a Scope) -> Mut<'a, T> {
+        scope.check_ownership(self.scope_id);
+
         unsafe {
             let cell = scope.world_cell();
             let entity = cell.get_entity(self.owner).unwrap();

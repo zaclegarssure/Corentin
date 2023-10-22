@@ -1,51 +1,48 @@
-use std::ptr::NonNull;
+use std::{cell::UnsafeCell, sync::Arc};
 
 /// A value which is shared on each resumed with a [`Future`].
 /// Used to emulate resume arguments to a [`Coroutine`].
-///
-/// It's really similar to a [`Box`], might even be possible to just use that instead.
 pub struct Resume<T> {
-    value: NonNull<T>,
+    value: Arc<UnsafeCell<T>>,
+}
+
+impl<T> Clone for Resume<T> {
+    fn clone(&self) -> Self {
+        Self {
+            value: self.value.clone(),
+        }
+    }
 }
 
 impl<T> Resume<T> {
     pub fn new(initial: T) -> Self {
         Self {
-            value: unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(initial))) },
+            value: Arc::new(UnsafeCell::new(initial)),
         }
-    }
-
-    /// Get the underlying raw pointer.
-    pub fn get_raw(&self) -> NonNull<T> {
-        self.value
     }
 
     /// Set the value.
     /// # Safety
     /// This must not be called while the [`Future`] is using this value.
     pub unsafe fn set(&mut self, value: T) {
-        *self.value.as_mut() = value;
+        *self.value.as_ref().get() = value;
     }
 
     /// Get the value.
     /// # Safety
     /// This must not be called while the [`Future`] is using this value.
     pub unsafe fn get(&self) -> &T {
-        self.value.as_ref()
+        &*self.value.as_ref().get()
     }
 
     /// Get the value mutably.
     /// # Safety
     /// This must not be called while the [`Future`] is using this value.
     pub unsafe fn get_mut(&mut self) -> &mut T {
-        self.value.as_mut()
+        &mut *self.value.as_ref().get()
     }
-}
 
-impl<T> Drop for Resume<T> {
-    fn drop(&mut self) {
-        unsafe {
-            drop(Box::from_raw(self.value.as_ptr()));
-        }
+    pub fn scope_droped(&self) -> bool {
+        Arc::strong_count(&self.value) == 1
     }
 }

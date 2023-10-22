@@ -131,6 +131,8 @@ where
 
             match res {
                 Poll::Ready(t) => {
+                    assert!(this.resume_param.scope_droped());
+
                     if let Some(sender) = this.result_sender.take() {
                         sender.send(t);
                     }
@@ -267,6 +269,7 @@ where
         let mut meta = CoroMeta {
             owner: scope.owner(),
             access: CoroAccess::default(),
+            id,
         };
 
         let params = F::Params::init(world_cell, &mut meta)?;

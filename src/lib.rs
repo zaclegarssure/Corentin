@@ -11,6 +11,7 @@ use executor::msg::CoroStatus;
 use executor::msg::YieldMsg;
 use global_channel::Channel;
 use global_channel::CommandChannel;
+use id_alloc::Id;
 use tinyset::SetUsize;
 
 use self::executor::msg::EmitMsg;
@@ -83,6 +84,7 @@ pub trait Coroutine: Send + 'static {
 }
 
 pub struct CoroMeta {
+    id: Id,
     owner: Option<Entity>,
     access: CoroAccess,
 }
@@ -137,7 +139,8 @@ type HeapCoro = SyncCell<Pin<Box<dyn Coroutine>>>;
 mod test {
     use std::{
         sync::{Arc, Mutex},
-        time::Instant,
+        thread,
+        time::{Duration, Instant},
     };
 
     use bevy::{
@@ -358,10 +361,10 @@ mod test {
         let b = Arc::clone(&a);
 
         coroutine(
-            |mut fib: Scope, mut example: Wr<ExampleComponent>| async move {
+            |mut s: Scope, mut example: Wr<ExampleComponent>| async move {
                 for _ in 0..5 {
-                    fib.next_tick().await;
-                    example.get_mut(&mut fib).0 += 1;
+                    s.next_tick().await;
+                    example.get_mut(&s).0 += 1;
                 }
             },
         )
@@ -405,6 +408,52 @@ mod test {
             assert_eq!(state.iter(world).len(), 1);
             executor.tick(world);
             assert_eq!(state.iter(world).len(), 0);
+        });
+    }
+
+    #[test]
+    #[should_panic]
+    fn not_droping_the_scope_should_panic() {
+        let mut world = World::new();
+        world.init_resource::<Executor>();
+        world.insert_resource(Time::new(Instant::now()));
+
+        root_coroutine(|mut s: Scope| async move {
+            s.next_tick().await;
+            std::thread::spawn(move || {
+                thread::sleep(Duration::from_secs(1));
+                s.commands().spawn_empty();
+            })
+        })
+        .apply(&mut world);
+
+        world.resource_scope(|world, mut executor: Mut<Executor>| {
+            executor.tick(world);
+            executor.tick(world);
+        });
+    }
+
+    #[test]
+    #[should_panic]
+    fn sending_rd_to_other_coro_should_panic() {
+        let mut world = World::new();
+        world.init_resource::<Executor>();
+        world.insert_resource(Time::new(Instant::now()));
+        let e = world.spawn(ExampleComponent(0)).id();
+
+        coroutine(|mut s: Scope, read: Rd<ExampleComponent>| async move {
+            s.start_local(move |s: Scope| async move {
+                let _a = read.get(&s);
+            });
+            loop {
+                s.next_tick().await;
+            }
+        })
+        .apply(e, &mut world);
+
+        world.resource_scope(|world, mut executor: Mut<Executor>| {
+            executor.tick(world);
+            executor.tick(world);
         });
     }
 }
