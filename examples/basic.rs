@@ -34,7 +34,7 @@ fn setup_scene(
             },
         ))
         .add(coroutine(
-            |mut s: Scope, mut transform: Rd<Transform>| async move {
+            |mut s: Scope, transform: Rd<Transform>| async move {
                 let mut i = 0;
                 let original_x = transform.get(&s).translation.x;
                 loop {
