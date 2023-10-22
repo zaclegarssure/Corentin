@@ -4,10 +4,10 @@ use bevy::{
     ecs::{component::ComponentId, world::unsafe_world_cell::UnsafeWorldCell},
     prelude::{Component, Entity, Mut},
 };
-
 use crate::{
     executor::msg::SignalId, function_coroutine::scope::Scope, id_alloc::Id, CoroMeta, SourceId,
 };
+
 
 use super::{on_change::ChangeTracker, CoroParam};
 
@@ -120,6 +120,7 @@ impl<T: Component> Wr<T> {
 
     pub fn get_mut<'a>(&'a mut self, scope: &'a Scope) -> Mut<'a, T> {
         scope.check_ownership(self.scope_id);
+
         unsafe {
             let cell = scope.world_cell();
             let entity = cell.get_entity(self.owner).unwrap();
